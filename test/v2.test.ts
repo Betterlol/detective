@@ -4,6 +4,7 @@ import { fixtureV2 } from './v2fixture.js';
 import { initialState, playerView, stateKey, transition } from '../src/engine.js';
 import { audit, validate } from '../src/validate.js';
 import { publicId, resolvePlayerCommand } from '../src/public.js';
+import { isV2State } from '../src/state-rules.js';
 
 test('v2 requires meaningful press, statement-targeted evidence, revision, mechanism and identity before ending', () => {
   const c = fixtureV2(), report = audit(c);
@@ -14,7 +15,7 @@ test('v2 requires meaningful press, statement-targeted evidence, revision, mecha
   assert.deepEqual(trace.finalState.solved, ['contradiction', 'mechanism', 'identity']);
   assert.equal(trace.ended, true);
   const revised = trace.steps.find(x => x.after.claims.includes('revision'))!;
-  assert.ok(revised.after.refuted!.includes('claim'));
+  assert.ok(isV2State(revised.after) && revised.after.refuted.includes('claim'));
   assert.equal(revised.before.claims.includes('revision'), false);
   assert.equal(revised.after.moods!.clerk, 'shaken');
 });
@@ -37,12 +38,12 @@ test('press repetition, wrong target, stale testimony and snapshot changes remai
   const c = fixtureV2();
   let s = transition(c, initialState(c), { kind: 'act', id: 'talk' }).state;
   const p = transition(c, s, { kind: 'press', id: 'claim' });
-  assert.equal(p.ok, true); assert.deepEqual(s.pressed, []);
+  assert.equal(p.ok, true); assert.ok(isV2State(s)); assert.deepEqual(s.pressed, []);
   assert.equal(stateKey(transition(c, p.state, { kind: 'press', id: 'claim' }).state), stateKey(p.state));
-  const clone = structuredClone(p.state); clone.moods!.clerk = 'angry';
+  const clone = structuredClone(p.state); assert.ok(isV2State(clone)); clone.moods.clerk = 'angry';
   assert.notEqual(stateKey(clone), stateKey(p.state));
   assert.equal(transition(c, p.state, { kind: 'present', id: 'contradiction', claimId: 'revision', optionId: 'alpha', evidenceIds: [] }).ok, false);
-  const report = audit(c), revised = report.search!.replay!.steps.find(x => x.after.refuted?.includes('claim'))!.after;
+  const report = audit(c), revised = report.search!.replay!.steps.find(x => isV2State(x.after) && x.after.refuted.includes('claim'))!.after;
   assert.equal(transition(c, revised, { kind: 'press', id: 'claim' }).ok, false);
   const view = playerView(c, revised); assert.equal(view.claims.find(x => x.id === publicId(c, 'claims', 'claim'))!.active, false);
 });

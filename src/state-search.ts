@@ -1,6 +1,7 @@
 import type { Case, Command, State } from './model.js';
 import { initialState, stateKey, transition } from './engine.js';
 import { publicId } from './public.js';
+import { isV2State } from './state-rules.js';
 import { replay } from './trace.js';
 import type { Issue } from './validation-types.js';
 
@@ -59,7 +60,7 @@ export function search(c: Case, limit = 100_000) {
       const r = transition(c, s, { kind: 'act', id }); probes++;
       if (stateKey(s) !== stateKey(r.state)) issues.push({ code: 'repeat-mutates', path: 'runtime', message: id });
     }
-    for (const id of s.pressed || []) {
+    for (const id of isV2State(s) ? s.pressed : []) {
       const r = transition(c, s, { kind: 'press', id }); probes++;
       if (stateKey(s) !== stateKey(r.state)) issues.push({ code: 'repeat-press-mutates', path: 'runtime', message: id });
     }

@@ -1,15 +1,14 @@
-import type { Case, Command, Result, State } from './model.js';
-import { activeClaim, satisfies } from './state-rules.js';
+import type { Case, CaseV2, Command, Mood, Result, State, StateV2 } from './model.js';
+import { activeClaim, isV2State, satisfies } from './state-rules.js';
 // Compatibility exports; presentation and shared predicates are implemented separately.
 export { activeClaim, satisfies } from './state-rules.js';
 export { opening, playerView } from './player-view.js';
 
 const add = (a: string[], x: string) => { if (!a.includes(x)) a.push(x); };
 export function initialState(c: Case): State {
-  return { locationId: c.initial.locationId, knowledge: [...c.initial.knowledge], flags: [...c.initial.flags],
-    evidence: [], claims: [], completed: [], solved: [], ended: false,
-    ...(c.version === '2.0' ? { pressed: [], refuted: [], moods: Object.fromEntries(c.characters.map(x => [x.id, 'calm' as const])) } : {}),
-  };
+  const shared = { locationId: c.initial.locationId, knowledge: [...c.initial.knowledge], flags: [...c.initial.flags],
+    evidence: [], claims: [], completed: [], solved: [], ended: false };
+  return c.version === '2.0' ? { ...shared, pressed: [], refuted: [], moods: Object.fromEntries(c.characters.map(x => [x.id, 'calm' as const])) } : shared;
 }
 function grantKnowledge(c: Case, s: State, id: string, output: string[]) {
   if (!s.knowledge.includes(id)) { add(s.knowledge, id); output.push(c.knowledge.find(k => k.id === id)!.text); }
@@ -31,9 +30,13 @@ function applyEffects(c: Case, s: State, effects: Case['actions'][number]['effec
     }
   }
 }
-function applyMoods(c: Case, s: State, changes: { characterId: string; mood: 'calm' | 'nervous' | 'angry' | 'shaken' | 'resolved' }[], output: string[]) {
+function requireV2State(state: State): StateV2 {
+  if (!isV2State(state)) throw new Error('Version 2 case requires version 2 state');
+  return state;
+}
+function applyMoods(c: CaseV2, s: StateV2, changes: { characterId: string; mood: Mood }[], output: string[]) {
   for (const x of changes) {
-    s.moods![x.characterId] = x.mood;
+    s.moods[x.characterId] = x.mood;
     const label = { calm: '平静', nervous: '紧张', angry: '愤怒', shaken: '动摇', resolved: '释然' }[x.mood];
     output.push(`${c.characters.find(y => y.id === x.characterId)!.name}显得${label}。`);
   }
@@ -45,6 +48,7 @@ function finish(c: Case, s: State, output: string[]) {
 export function transition(c: Case, state: State, command: Command): Result {
   const s = structuredClone(state), output: string[] = [];
   const reject = (status: string, text: string): Result => ({ ok: false, status, state: s, text: [text] });
+  if ((c.version === '2.0') !== isV2State(s)) return reject('state-version-mismatch', '案件版本与运行状态不匹配。');
   if (s.ended) return reject('ended', '案件已结案。');
   if (command.kind === 'move') {
     const loc = c.locations.find(x => x.id === command.id);
@@ -58,15 +62,16 @@ export function transition(c: Case, state: State, command: Command): Result {
     if (s.completed.includes(a.id)) return { ok: true, status: 'repeat', state: s, text: [a.repeatText] };
     output.push(a.text); add(s.completed, a.id);
     applyEffects(c, s, a.effects, output);
-    if (c.version === '2.0') applyMoods(c, s, c.actions.find(x => x.id === a.id)!.moodChanges, output);
+    if (c.version === '2.0') applyMoods(c, requireV2State(s), c.actions.find(x => x.id === a.id)!.moodChanges, output);
   } else if (command.kind === 'press') {
     if (c.version !== '2.0') return reject('unsupported', '此版本没有独立追问。');
+    const stateV2 = requireV2State(s);
     const claim = c.claims.find(x => x.id === command.id);
     if (!claim?.press || claim.locationId !== s.locationId || !activeClaim(c, s, claim.id)) return reject('unavailable', '这条陈述尚未取得、已被反驳，或证人此刻不在这个地点接受追问。');
-    if ((s.pressed || []).includes(claim.id)) return { ok: true, status: 'repeat', state: s, text: [claim.press.repeatText] };
+    if (stateV2.pressed.includes(claim.id)) return { ok: true, status: 'repeat', state: s, text: [claim.press.repeatText] };
     if (!satisfies(s, claim.press.requires)) return reject('unavailable', '先完成追问所需的调查。');
-    output.push(claim.press.text); add(s.pressed!, claim.id);
-    applyEffects(c, s, claim.press.effects, output); applyMoods(c, s, claim.press.moodChanges, output);
+    output.push(claim.press.text); add(stateV2.pressed, claim.id);
+    applyEffects(c, s, claim.press.effects, output); applyMoods(c, stateV2, claim.press.moodChanges, output);
   } else {
     const i = c.inferences.find(x => x.id === command.id);
     if (!i) return reject('unknown-inference', '这个推理问题不存在。');
@@ -88,8 +93,9 @@ export function transition(c: Case, state: State, command: Command): Result {
     i.unlockFlags.forEach(x => add(s.flags, x));
     if (c.version === '2.0') {
       const v2 = c.inferences.find(x => x.id === i.id)!;
-      if (v2.kind === 'contradiction' && v2.claimId) add(s.refuted!, v2.claimId);
-      applyEffects(c, s, v2.effects, output); applyMoods(c, s, v2.moodChanges, output);
+      const stateV2 = requireV2State(s);
+      if (v2.kind === 'contradiction' && v2.claimId) add(stateV2.refuted, v2.claimId);
+      applyEffects(c, s, v2.effects, output); applyMoods(c, stateV2, v2.moodChanges, output);
     }
   }
   finish(c, s, output);
@@ -99,5 +105,5 @@ export function transition(c: Case, state: State, command: Command): Result {
 export const stateKey = (s: State): string => JSON.stringify({ ...s,
   knowledge: [...s.knowledge].sort(), evidence: [...s.evidence].sort(), claims: [...s.claims].sort(),
   flags: [...s.flags].sort(), completed: [...s.completed].sort(), solved: [...s.solved].sort(),
-  ...(s.pressed ? { pressed: [...s.pressed].sort(), refuted: [...(s.refuted || [])].sort(), moods: Object.fromEntries(Object.entries(s.moods || {}).sort(([a], [b]) => a.localeCompare(b))) } : {}),
+  ...(isV2State(s) ? { pressed: [...s.pressed].sort(), refuted: [...s.refuted].sort(), moods: Object.fromEntries(Object.entries(s.moods).sort(([a], [b]) => a.localeCompare(b))) } : {}),
 });

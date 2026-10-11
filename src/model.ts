@@ -90,13 +90,19 @@ export const caseV2Schema = legacyCaseSchema.extend({
   resolution: z.object({ identityInferenceId: id, actFactId: id, suspectIds: ids.min(2) }).strict(),
 }).strict();
 export const caseSchema = z.discriminatedUnion('version', [legacyCaseSchema, caseV2Schema]);
+export type CaseV1 = z.infer<typeof legacyCaseSchema>;
 export type CaseV2 = z.infer<typeof caseV2Schema>;
 export type Case = z.infer<typeof caseSchema>;
-export type State = {
+export type Mood = z.infer<typeof moods>;
+type SharedState = {
   locationId: string; knowledge: string[]; evidence: string[]; claims: string[];
   flags: string[]; completed: string[]; solved: string[]; ended: boolean;
-  pressed?: string[]; refuted?: string[]; moods?: Record<string, z.infer<typeof moods>>;
 };
+export type StateV1 = SharedState;
+export type StateV2 = SharedState & {
+  pressed: string[]; refuted: string[]; moods: Record<string, Mood>;
+};
+export type State = StateV1 | StateV2;
 export type Command =
   | { kind: 'move'; id: string }
   | { kind: 'act'; id: string }
