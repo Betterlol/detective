@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { type Case } from './model.js';
 import { callModel, type ModelConfig } from './provider.js';
-import { type TraceStep } from './validate.js';
+import { type TraceStep } from './trace.js';
 import { saveJson } from './io.js';
 import { join } from 'node:path';
 
