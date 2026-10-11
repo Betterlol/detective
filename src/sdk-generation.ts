@@ -107,7 +107,6 @@ async function generateSdkLocked(input: GenerateInput, overrides: Partial<Genera
   manifest.maxRepairs = maxRepairs;
   manifest.maxDesignRepairs = maxDesignRepairs;
   manifest.skippedMechanisms = [
-    ...(!settings.workflow.polish ? ['polish'] : []),
     ...(!settings.workflow.foundationReview ? ['foundationReview'] : []),
     ...(!settings.workflow.caseReview ? ['caseReview'] : []),
     ...(!settings.workflow.blindPlaytest ? ['blindPlaytest'] : []),

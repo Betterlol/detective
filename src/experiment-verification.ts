@@ -27,7 +27,8 @@ export type AcceptedCaseSummary = {
 
 export async function verifyAcceptedExperiment(dir: string, directory: string, manifest: AcceptanceManifest, legacy: boolean,
   limit = defaultDetectiveConfig.validation.searchStateLimit) {
-  const c = caseSchema.parse(await readJson(join(dir, 'case.json'))), a = audit(c, limit);
+  const c = caseSchema.parse(await readJson(join(dir, 'case.json'))), auditStarted = Date.now(), a = audit(c, limit);
+  const auditMetrics = { elapsedMs: Date.now() - auditStarted, searchCount: a.search ? 1 : 0 };
   const storedReplay = await readJson(join(dir, 'replay.json')) as { steps: { command: Parameters<typeof replay>[1][number] }[] };
   const freshReplay = replay(c, storedReplay.steps.map(x => x.command));
   const evidenceSheet = inferenceEvidence(c, freshReplay);
@@ -93,7 +94,7 @@ export async function verifyAcceptedExperiment(dir: string, directory: string, m
   }
   const reviewAcceptedWhenEnabled = !caseReviewEnabled || (!!review && reviewAccepted(c, review));
   const passed = a.ok && freshReplay.ended && reviewAcceptedWhenEnabled && provenance && reproducible && visiblePremises && blindReproducible && (legacy || c.version === '2.0');
-  await saveJson(join(verificationDir, 'verification.json'), { ok: passed, caseHash: hash(c), provenance, sdkProvenance: sdk, reproducible, visiblePremises, publicViewMigrated, blindReproducible, audit: a });
+  await saveJson(join(verificationDir, 'verification.json'), { ok: passed, caseHash: hash(c), provenance, sdkProvenance: sdk, reproducible, visiblePremises, publicViewMigrated, blindReproducible, auditMetrics, audit: a });
   const problem = passed ? null : `${directory} \u91cd\u65b0\u9a8c\u6536\u5931\u8d25`;
   const caseSummary = manifest.kind === 'natural-generation' ? {
     directory, version: c.version, theme: c.theme, title: c.title, ok: passed,

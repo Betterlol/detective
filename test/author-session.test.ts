@@ -51,9 +51,10 @@ test('author edits files and validates them in one thread, then resumes the save
   assert.equal(restored.workspace, a.workspace);
 }));
 
-test('author self-reported success cannot replace a real trusted validation command', async () => withTemp(async dir => {
+test('authors may submit without an intermediate tool; the program retains boundary validation', async () => withTemp(async dir => {
   const fake = fakeClient(false), a = await AuthorSession.open(dir, config, false, fake.client);
-  await assert.rejects(a.run('design', 'create', join(dir, 'design/attempt-0')), /校验工具/);
+  const submitted = await a.run('design', 'create', join(dir, 'design/attempt-0'));
+  assert.equal(submitted.evidence, null);
 }));
 
 test('trusted case tool detects changes to the accepted foundation and returns real replay text', async () => withTemp(async dir => {

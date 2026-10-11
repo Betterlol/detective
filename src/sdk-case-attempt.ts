@@ -1,6 +1,6 @@
 import { access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { readAuthorArtifact } from './author-tools.js';
+import { readAuthorArtifact, auditFromEvidence } from './author-tools.js';
 import { auditDesign, designConsistency } from './design-validation.js';
 import { caseV2Schema } from './model.js';
 import { audit } from './validate.js';
@@ -14,6 +14,8 @@ import type { AuthorHandle, FoundationAttempt, GenerationServices, SdkManifest, 
 import { runCaseQualityGates } from './case-quality.js';
 import { acceptSdkFoundation, createSdkFoundation, type SdkFoundationState } from './sdk-foundation.js';
 import { usedBudget } from './sdk-generation-utils.js';
+import { ModelCallError } from './sdk-run.js';
+import { ContentSubmissionError } from './author-session.js';
 
 export type SdkAttemptState = SdkFoundationState & { previous: unknown };
 
@@ -57,14 +59,7 @@ export async function runSdkCaseAttempt(context: SdkCaseAttemptContext, index: n
   try {
     console.log(`[${input.out}] 作者 ${attempt.kind} ${directory}`);
     let stageDirectory = `${directory}/${attempt.kind === 'create' ? 'build' : 'repair'}`;
-    let run = await author.run(attempt.kind === 'create' ? 'build' : 'repair', `${prompt}\n先完成可执行取证、条件与推理关系。`, join(out, stageDirectory));
-    if (!run.requestDesignRevision && attempt.kind === 'create' && settings.workflow.polish) {
-      stageDirectory = `${directory}/polish`;
-      run = await author.run('polish', `${prompt}\n可执行案件已存在。局部完善人物语气、悬念、追问、反驳与结局演出；事实和必要前提须保持一致，检查真实回放文字并重新校验。`, join(out, stageDirectory));
-    } else if (!run.requestDesignRevision && attempt.kind === 'create' && !settings.workflow.polish) {
-      attempt.skippedMechanisms = [...(attempt.skippedMechanisms ?? []), 'polish'];
-      await saveJson(join(out, directory, 'polish-skipped.json'), { mechanism: 'polish', reason: 'disabled-by-config' });
-    }
+    let run = await author.run(attempt.kind === 'create' ? 'build' : 'repair', `${prompt}\n在本轮自主完成构建、文案润色及所需检查，准备完整候选后提交；不会固定追加润色轮次。`, join(out, stageDirectory));
     manifest.authorThreadId = run.threadId;
 
     if (run.requestDesignRevision) {
@@ -89,14 +84,23 @@ export async function runSdkCaseAttempt(context: SdkCaseAttemptContext, index: n
       };
       if (!await acceptSdkFoundation(foundationContext, run, record) && !await createSdkFoundation(foundationContext))
         throw new Error('修订后的基石没有独立验收通过');
+      // Both files can be prepared in the same turn. Preserve the revised case and submit it immediately.
+      try {
+        const prepared = await readAuthorArtifact(author.workspace, 'case.json');
+        if (!caseV2Schema.safeParse(prepared).success) return 'continue';
+        run = { ...run, artifact: prepared, artifactHash: hash(prepared), evidence: null, requestDesignRevision: false };
+        await saveJson(join(out, stageDirectory, 'design-artifact.json'), await readAuthorArtifact(author.workspace, 'design.json'));
+        await saveJson(join(out, stageDirectory, 'case-artifact.json'), prepared);
+        attempt.status = 'running';
+      } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return 'continue'; throw e; }
       await save();
-      return 'continue';
     }
 
     const current = auditDesign(await readAuthorArtifact(author.workspace, 'design.json'));
     if (!current.ok || !current.design || hash(current.design) !== manifest.acceptedDesignHash) throw new Error('作者未经重新验收修改了基石');
 
-    const rawCase = run.artifact;
+    const rawCase = await readAuthorArtifact(author.workspace, 'case.json');
+    if (hash(rawCase) !== run.artifactHash) throw new ContentSubmissionError('提交文件与作者回执快照不一致；文件变化后必须重新提交，不能沿用旧检查');
     attempt.consumesBudget = true;
     await saveJson(join(out, directory, 'case.json'), rawCase);
     if (state.previous) await saveJson(join(out, directory, 'repair-diff.json'), {
@@ -105,11 +109,17 @@ export async function runSdkCaseAttempt(context: SdkCaseAttemptContext, index: n
     state.previous = rawCase;
 
     const parsed = caseV2Schema.safeParse(rawCase);
-    const validation = audit(rawCase, settings.validation.searchStateLimit);
+    const boundaryStart = Date.now();
+    const reused = await auditFromEvidence(author.workspace, run.evidence, await readAuthorArtifact(author.workspace, 'design.json'), rawCase, settings.validation.searchStateLimit);
+    const validation = reused ?? audit(rawCase, settings.validation.searchStateLimit);
     const consistency = parsed.success ? designConsistency(state.design!, parsed.data) : [];
     const checked = { ...validation, ok: validation.ok && consistency.length === 0, issues: [...validation.issues, ...consistency] };
     await saveJson(join(out, directory, 'audit.json'), checked);
-    state.feedback = checked;
+    await saveJson(join(out, stageDirectory, 'boundary-validation.json'), { caseHash: hash(rawCase), designHash: manifest.acceptedDesignHash,
+      searchStateLimit: settings.validation.searchStateLimit, reused: !!reused, elapsedMs: Date.now() - boundaryStart,
+      searchCount: !reused && validation.search ? 1 : 0, auditHash: hash(checked), ok: checked.ok });
+    state.feedback = { failureKind: 'content', issues: checked.issues,
+      search: checked.search ? { states: checked.search.states, exhaustive: checked.search.exhaustive, counterexample: checked.search.counterexample } : null };
     if (!checked.ok || !checked.search?.replay || !parsed.success) {
       attempt.status = 'validation-failed';
       attempt.diagnostics = checked.issues;
@@ -144,11 +154,11 @@ export async function runSdkCaseAttempt(context: SdkCaseAttemptContext, index: n
   } catch (e) {
     attempt.status = manifest.pendingDesignRevision ? 'design-revision-failed' : 'author-or-evaluation-failed';
     attempt.diagnostics = String(e);
-    state.feedback = { error: String(e) };
+    state.feedback = { failureKind: e instanceof ModelCallError ? 'model-transport' : e instanceof ContentSubmissionError ? 'content' : 'tool-execution', error: String(e) };
     await saveJson(join(out, directory, 'failure.json'), state.feedback);
     await save();
-    attempt.consumesBudget = false;
+    attempt.consumesBudget = e instanceof ContentSubmissionError;
     await save();
-    return 'stop';
+    return e instanceof ContentSubmissionError ? 'continue' : 'stop';
   }
 }

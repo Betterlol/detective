@@ -57,7 +57,7 @@ export async function runCaseQualityGates(input: {
 
   let playtest: BlindRecord & { reasoningMistakes: number } | undefined;
   if (settings.workflow.blindPlaytest) {
-    console.log(`[${input.outputDir}] 开始盲玩家模型试玩`);
+    console.log(`[${outputDirectory}] 开始盲玩家模型试玩`);
     playtest = await services.blindPlay(caseData, join(attemptDirectory, 'player'), config, settings.blindPlay);
     if (!playtest.ok) {
       attempt.status = 'player-failed';

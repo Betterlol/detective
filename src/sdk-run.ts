@@ -17,6 +17,10 @@ export interface AgentClient {
 }
 export type LoggedRun = { finalResponse: string; threadId: string; items: ThreadItem[]; usage: Usage | null };
 export class ModelCallError extends Error {}
+export function isReconnectNotice(message: string) {
+  const match = /^Reconnecting\.\.\. (\d+)\/(\d+) \(/.exec(message);
+  return !!match && Number(match[1]) <= Number(match[2]) && Number(match[2]) <= 5;
+}
 
 export function createCodexClient(): AgentClient {
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
@@ -60,6 +64,7 @@ export async function runLoggedThread(thread: AgentThread, prompt: string, schem
   await saveText(join(dir, 'events.jsonl'), '');
   const start = Date.now(); let finalResponse = '', threadId = thread.id, usage: Usage | null = null, completed = false;
   const items: ThreadItem[] = [];
+  const reconnectNotices: string[] = [];
   try {
     if (!Number.isFinite(config.timeoutMs) || config.timeoutMs <= 0) throw new Error('模型超时必须是正数');
     const run = await thread.runStreamed(prompt, { outputSchema: schema, signal: AbortSignal.timeout(config.timeoutMs) });
@@ -69,6 +74,7 @@ export async function runLoggedThread(thread: AgentThread, prompt: string, schem
         if (threadId && threadId !== event.thread_id) throw new Error('作者会话 ID 意外变化');
         threadId = event.thread_id; await onThread?.(threadId);
       }
+      if (event.type === 'error' && isReconnectNotice(event.message)) { reconnectNotices.push(event.message); continue; }
       if (event.type === 'turn.failed' || event.type === 'error') throw new Error(event.type === 'error' ? event.message : event.error.message);
       if ('item' in event) {
         if (!allowTools && ['command_execution', 'file_change', 'mcp_tool_call', 'web_search'].includes(event.item.type))
@@ -82,11 +88,11 @@ export async function runLoggedThread(thread: AgentThread, prompt: string, schem
     }
     if (!completed || !threadId || !finalResponse) throw new Error('SDK 未完成该轮或没有返回最终回复');
     await saveText(join(dir, 'raw.json'), finalResponse);
-    await saveJson(join(dir, 'transport.json'), { exitCode: 0, elapsedMs: Date.now() - start, model: config.model, threadId, usage });
+    await saveJson(join(dir, 'transport.json'), { exitCode: 0, elapsedMs: Date.now() - start, model: config.model, threadId, usage, reconnectNotices });
     return { finalResponse, threadId, items, usage };
   } catch (e) {
     if (finalResponse) await saveText(join(dir, 'raw.json'), finalResponse);
-    await saveJson(join(dir, 'transport.json'), { exitCode: 1, elapsedMs: Date.now() - start, model: config.model, threadId, usage, error: String(e) });
+    await saveJson(join(dir, 'transport.json'), { exitCode: 1, elapsedMs: Date.now() - start, model: config.model, threadId, usage, reconnectNotices, error: String(e) });
     throw new ModelCallError(String(e));
   }
 }

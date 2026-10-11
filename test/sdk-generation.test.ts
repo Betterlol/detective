@@ -11,6 +11,10 @@ import { ModelCallError } from '../src/sdk-run.js';
 import { checkAuthorWorkspace } from '../src/author-tools.js';
 import type { AuthorStage } from '../src/author-session.js';
 import type { ReviewV2 } from '../src/review.js';
+import { defaultDetectiveConfig } from '../src/config.js';
+
+// Explicitly exercise compatibility review hooks with fixtures; production defaults disable them.
+const fixtureReviewSettings = { ...defaultDetectiveConfig, workflow: { ...defaultDetectiveConfig.workflow, caseReview: true, blindPlaytest: true } };
 
 async function withTemp(run: (dir: string) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), 'detective-sdk-generation-test-'));
@@ -58,9 +62,9 @@ function services(out: string, foundationFails = 0, caseFails = 0) {
 
 test('foundation review failure repairs the foundation before building, then case feedback repairs files', async () => withTemp(async dir => {
   const { deps, stages } = services(dir, 1, 1);
-  const result = await generateWithSdk({ theme: 'test', constraints: '', out: dir, maxRepairs: 1, maxDesignRepairs: 1 }, deps);
+  const result = await generateWithSdk({ theme: 'test', constraints: '', out: dir, maxRepairs: 1, maxDesignRepairs: 1, settings: fixtureReviewSettings }, deps);
   assert.equal(result.status, 'accepted'); assert.equal(result.foundationAttempts.length, 2);
-  assert.deepEqual(stages, ['design', 'design', 'build', 'polish', 'repair']);
+  assert.deepEqual(stages, ['design', 'design', 'build', 'repair']);
   assert.equal(result.attempts[0]!.status, 'review-failed'); assert.equal(result.acceptedAttempt, 1);
   assert.equal(result.authorThreadId, 'author-fixture');
   assert.equal(result.config.model, 'gpt-6-luna'); assert.equal(result.config.reasoningEffort, 'high');
@@ -72,6 +76,25 @@ test('foundation budget exhaustion prevents executable case generation', async (
   assert.equal(result.status, 'failed'); assert.deepEqual(stages, ['design']); assert.equal(result.attempts.length, 0);
 }));
 
+test('program submission boundary rejects a candidate changed after a successful author check', async () => withTemp(async dir => {
+  const base = services(dir), open = base.deps.openAuthor;
+  base.deps.openAuthor = async (...args) => {
+    const a = await open(...args), run = a.run.bind(a);
+    a.run = async (stage, ...rest) => {
+      const result = await run(stage, ...rest);
+      if (stage === 'build') {
+        const changed = fixtureV2(); changed.actions[0]!.effects.push({ kind: 'knowledge', id: changed.inferences[0]!.conclusionKnowledgeId });
+        await saveJson(join(a.workspace, 'case.json'), changed);
+      }
+      return result;
+    }; return a;
+  };
+  const result = await generateWithSdk({ theme: 'test', constraints: '', out: dir, maxRepairs: 0 }, base.deps);
+  assert.equal(result.status, 'failed'); assert.equal(result.acceptedCaseHash, null);
+  assert.equal(result.attempts[0]!.consumesBudget, true);
+  assert.match(JSON.stringify(result.attempts[0]!.diagnostics), /快照不一致/);
+}));
+
 test('additional feedback resumes the author instead of starting another creator conversation', async () => withTemp(async dir => {
   const { deps, resumed } = services(dir);
   await generateWithSdk({ theme: 'test', constraints: '', out: dir, maxRepairs: 0 }, deps);
@@ -79,12 +102,12 @@ test('additional feedback resumes the author instead of starting another creator
   assert.deepEqual(resumed, [false, true]); assert.equal(result.status, 'accepted'); assert.equal(result.acceptedAttempt, 1);
 }));
 
-test('resuming a failed foundation still builds and polishes the first complete case', async () => withTemp(async dir => {
+test('resuming a failed foundation builds the first complete case in one content turn', async () => withTemp(async dir => {
   const failed = services(dir, 10);
   await generateWithSdk({ theme: 'test', constraints: '', out: dir, maxDesignRepairs: 0 }, failed.deps);
   const next = services(dir);
   const result = await generateWithSdk({ theme: '', constraints: '', out: dir, resume: true, feedback: { message: 'repair foundation' }, maxDesignRepairs: 1 }, next.deps);
-  assert.equal(result.status, 'accepted'); assert.deepEqual(next.stages, ['design', 'build', 'polish']);
+  assert.equal(result.status, 'accepted'); assert.deepEqual(next.stages, ['design', 'build']);
 }));
 
 test('explicit foundation revision from a case stage is reviewed before continuing content', async () => withTemp(async dir => {
@@ -106,8 +129,8 @@ test('explicit foundation revision from a case stage is reviewed before continui
   };
   const result = await generateWithSdk({ theme: 'test', constraints: '', out: dir, maxRepairs: 1 }, base.deps);
   assert.equal(result.status, 'accepted'); assert.equal(result.acceptedFoundation, 1);
-  assert.equal(result.attempts[0]!.status, 'design-revision-requested'); assert.equal(result.acceptedAttempt, 1);
-  assert.deepEqual(base.stages, ['design', 'build', 'repair']);
+  assert.equal(result.attempts[0]!.status, 'accepted'); assert.equal(result.acceptedAttempt, 0);
+  assert.deepEqual(base.stages, ['design', 'build']);
 }));
 
 test('a failed author setup stops the experiment instead of leaving a running manifest', async () => withTemp(async dir => {
@@ -188,7 +211,7 @@ test('evaluation runtime failures do not exhaust content defect repairs', async 
   for (let n = 0; n < 6; n++) {
     const base = services(dir); base.deps.blindPlay = async () => { throw new Error('evaluation program unavailable'); };
     const result = await generateWithSdk({ theme: 'test', constraints: '', out: dir, resume: n > 0,
-      feedback: n > 0 ? { message: 'retry evaluation' } : undefined, maxRepairs: 0 }, base.deps);
+      feedback: n > 0 ? { message: 'retry evaluation' } : undefined, maxRepairs: 0, settings: fixtureReviewSettings }, base.deps);
     assert.equal(result.status, 'failed');
   }
   const result = await generateWithSdk({ theme: '', constraints: '', out: dir, resume: true,

@@ -51,11 +51,11 @@ export const defaultDetectiveConfig: DetectiveConfig = {
   model: { provider: 'codex', timeoutMs: 480_000 },
   generation: {
     defaultConstraints: '微型完整中文案件；至少一处公平的关键推理',
-    maxRepairs: 2,
-    maxDesignRepairs: 2,
+    maxRepairs: 3,
+    maxDesignRepairs: 5,
     maxRepairBudget: 5,
   },
-  workflow: { polish: true, foundationReview: true, caseReview: true, blindPlaytest: true },
+  workflow: { polish: true, foundationReview: true, caseReview: false, blindPlaytest: false },
   validation: { searchStateLimit: 100_000 },
   blindPlay: { maxDecisions: 12, maxSteps: 160, maxMistakesPerInference: 3, maxActionsPerLocation: 40 },
 };
