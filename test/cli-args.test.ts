@@ -15,3 +15,9 @@ test('CLI parser retains multiple positional paths around named options', () => 
   assert.deepEqual(args.positionals, ['case.json', 'trace.json']);
   assert.equal(args.option('out'), 'replayed.json');
 });
+
+test('CLI parser treats values for known options as values even when they begin with dashes', () => {
+  const args = parseCliArguments(['generate', '--theme', '--moonlit', '--out', 'experiments/night']);
+  assert.equal(args.option('theme'), '--moonlit');
+  assert.equal(args.option('out'), 'experiments/night');
+});
