@@ -1,5 +1,7 @@
 import { caseSchema, type Case, type Command, type State } from './model.js';
 import { initialState, opening, playerView, stateKey, transition } from './engine.js';
+import { publicId } from './public.js';
+import { validateV2 } from './validate-v2.js';
 
 export type Issue = { code: string; path: string; message: string };
 export function validate(input: unknown): { case?: Case; issues: Issue[] } {
@@ -70,6 +72,7 @@ export function validate(input: unknown): { case?: Case; issues: Issue[] } {
     if (!c.ending.requires.knowledge.includes(i.conclusionKnowledgeId))
       issue('optional-core-inference', p, '原型要求每项关键推理结论作为结案条件');
   }
+  if (c.version === '2.0') validateV2(c, issues);
   return { case: c, issues };
 }
 
@@ -105,7 +108,10 @@ export function search(c: Case, limit = 100_000) {
     const candidates: Command[] = [
       ...c.locations.map(x => ({ kind: 'move' as const, id: x.id })),
       ...c.actions.map(x => ({ kind: 'act' as const, id: x.id })),
-      ...c.inferences.flatMap(i => i.solutions.map(x => ({ kind: 'reason' as const, id: i.id, optionId: x.optionId, evidenceIds: x.evidenceIds }))),
+      ...(c.version === '2.0' ? c.claims.filter(x => x.press).map(x => ({ kind: 'press' as const, id: x.id })) : []),
+      ...c.inferences.flatMap(i => i.solutions.map(x => (c.version === '2.0' && i.claimId ?
+        { kind: 'present' as const, id: i.id, claimId: i.claimId, optionId: x.optionId, evidenceIds: x.evidenceIds } :
+        { kind: 'reason' as const, id: i.id, optionId: x.optionId, evidenceIds: x.evidenceIds }))),
     ];
     for (const command of candidates) {
       const r = transition(c, s, command), key = stateKey(r.state);
@@ -122,10 +128,12 @@ export function search(c: Case, limit = 100_000) {
     // Probe incorrect explanations, missing/unknown evidence and repetitions against the real engine.
     const invalid: Command[] = [{ kind: 'act', id: '__invalid__' }, { kind: 'move', id: '__invalid__' }];
     for (const i of c.inferences) {
-      for (const o of i.options) if (!i.solutions.some(x => x.optionId === o.id)) invalid.push({ kind: 'reason', id: i.id, optionId: o.id, evidenceIds: [...s.evidence] });
+      const submission = (optionId: string, evidenceIds: string[]): Command => c.version === '2.0' && i.claimId ?
+        { kind: 'present', id: i.id, claimId: i.claimId, optionId, evidenceIds } : { kind: 'reason', id: i.id, optionId, evidenceIds };
+      for (const o of i.options) if (!i.solutions.some(x => x.optionId === o.id)) invalid.push(submission(o.id, [...s.evidence]));
       for (const solution of i.solutions) {
-        invalid.push({ kind: 'reason', id: i.id, optionId: solution.optionId, evidenceIds: [] });
-        invalid.push({ kind: 'reason', id: i.id, optionId: solution.optionId, evidenceIds: ['__invalid__'] });
+        invalid.push(submission(solution.optionId, []));
+        invalid.push(submission(solution.optionId, ['__invalid__']));
       }
     }
     for (const command of invalid) {
@@ -135,6 +143,10 @@ export function search(c: Case, limit = 100_000) {
     for (const id of s.completed) {
       const r = transition(c, s, { kind: 'act', id }); probes++;
       if (stateKey(s) !== stateKey(r.state)) issues.push({ code: 'repeat-mutates', path: 'runtime', message: id });
+    }
+    for (const id of s.pressed || []) {
+      const r = transition(c, s, { kind: 'press', id }); probes++;
+      if (stateKey(s) !== stateKey(r.state)) issues.push({ code: 'repeat-press-mutates', path: 'runtime', message: id });
     }
   }
   const winning = new Set(endings), queue = [...endings];
@@ -175,18 +187,18 @@ export function inferenceEvidence(c: Case, trace: ReturnType<typeof replay>) {
     return n < 0 ? null : n + 1;
   };
   return trace.steps.flatMap((step, n) => {
-    if (step.command.kind !== 'reason') return [];
+    if (step.command.kind !== 'reason' && step.command.kind !== 'present') return [];
     const i = c.inferences.find(x => x.id === step.command.id)!;
     const command = step.command;
     const solution = i.solutions.find(x => x.optionId === command.optionId && x.evidenceIds.every(e => command.evidenceIds.includes(e)))!;
     return [{ inferenceId: i.id, executedAt: n + 1, question: i.question,
-      claim: i.claimId ? { ...step.playerBefore.claims.find(x => x.id === i.claimId), acquiredAt: acquired('claims', i.claimId) } : null,
+      claim: i.claimId ? { ...step.playerBefore.claims.find(x => x.id === publicId(c, 'claims', i.claimId!)), acquiredAt: acquired('claims', i.claimId) } : null,
       submittedArgument: i.options.find(x => x.id === command.optionId)!.text,
-      evidence: command.evidenceIds.map(id => ({ ...step.playerBefore.evidence.find(x => x.id === id), acquiredAt: acquired('evidence', id) })),
-      prerequisites: solution.knowledgeIds.map(id => ({ id, text: step.playerBefore.knowledge.find(x => x.id === id)?.text,
+      evidence: command.evidenceIds.map(id => ({ ...step.playerBefore.evidence.find(x => x.id === publicId(c, 'evidence', id)), acquiredAt: acquired('evidence', id) })),
+      prerequisites: solution.knowledgeIds.map(id => ({ id, text: step.playerBefore.knowledge.find(x => x.id === publicId(c, 'knowledge', id))?.text,
         acquiredAt: acquired('knowledge', id), presentBeforeReasoning: step.before.knowledge.includes(id) })),
       premises: i.argument.premises.map(p => ({ ...p, acquiredAt: acquired('knowledge', p.knowledgeId),
-        visibleBeforeReasoning: !!step.playerBefore.knowledge.find(k => k.id === p.knowledgeId)?.text.includes(p.quote) })),
+        visibleBeforeReasoning: !!step.playerBefore.knowledge.find(k => k.id === publicId(c, 'knowledge', p.knowledgeId))?.text.includes(p.quote) })),
       progressionText: step.text, authorRelation: i.argument.relation,
       limit: '只证明这些文字在执行时已呈现与条件满足，论证蕴含关系仍须文本审查。',
     }];

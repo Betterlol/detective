@@ -1,0 +1,45 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { fixtureV2 } from './v2fixture.js';
+import { initialState, playerView, transition } from '../src/engine.js';
+import { blindTranscriptValid, playerPacket, type BlindRecord, type PublicEvent } from '../src/blind-player.js';
+import { audit } from '../src/validate.js';
+import { orderedOptions, publicId } from '../src/public.js';
+
+test('blind player receives only public observations and a frozen transcript prefix', () => {
+  const c = fixtureV2(), events = [{ command: { kind: 'act', id: 'a1' }, status: 'unavailable', ok: false, text: ['不能执行'] }];
+  const packet = playerPacket(c, initialState(c), events);
+  events.push({ command: { kind: 'move', id: 'l2' }, status: 'advanced', ok: true, text: ['未来输出'] });
+  assert.equal(packet.transcript.length, 1);
+  const text = JSON.stringify(packet);
+  for (const hidden of ['SECRET_', 'privateMotive', 'solutions', 'attribution', 'culpritId', 'f_act', 'future']) assert.equal(text.includes(hidden), false);
+});
+
+test('blind verification requires one exact model record for every reasoning event and its past-only input', () => {
+  const c = fixtureV2(), transcript: PublicEvent[] = [], decisions: BlindRecord['decisions'] = [];
+  let state = initialState(c);
+  for (const step of audit(c).search!.replay!.steps) {
+    const cmd = step.command;
+    const input = playerPacket(c, state, transcript);
+    const command = cmd.kind === 'move' ? { kind: cmd.kind, id: publicId(c, 'locations', cmd.id) } :
+      cmd.kind === 'act' ? { kind: cmd.kind, id: publicId(c, 'actions', cmd.id) } :
+      cmd.kind === 'press' ? { kind: cmd.kind, id: publicId(c, 'claims', cmd.id) } : {
+        kind: cmd.kind, id: publicId(c, 'inferences', cmd.id),
+        optionId: orderedOptions(c, c.inferences.find(i => i.id === cmd.id)!).find(x => x.internalId === cmd.optionId)!.choice,
+        evidenceIds: cmd.evidenceIds.map(e => publicId(c, 'evidence', e)),
+        ...(cmd.kind === 'present' ? { claimId: publicId(c, 'claims', cmd.claimId) } : {}),
+      };
+    const r = transition(c, state, cmd);
+    const event = { command, status: r.status, ok: r.ok, text: r.text };
+    if (cmd.kind === 'reason' || cmd.kind === 'present') decisions.push({ input, output: { command }, result: event });
+    transcript.push(event); state = r.state;
+  }
+  const record = { ok: true, transcript, decisions, finalState: state };
+  assert.equal(blindTranscriptValid(c, record), true);
+  assert.equal(blindTranscriptValid(c, { ...record, decisions: [] }), false);
+  assert.equal(blindTranscriptValid(c, { ...record, decisions: decisions.slice(1) }), false);
+  const future = structuredClone(record); future.decisions[0]!.input.transcript = transcript;
+  assert.equal(blindTranscriptValid(c, future), false);
+  const altered = structuredClone(record); altered.decisions[0]!.input.view = playerView(c, state);
+  assert.equal(blindTranscriptValid(c, altered), false);
+});

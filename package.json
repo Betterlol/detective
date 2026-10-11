@@ -7,7 +7,8 @@
     "check": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
     "lab": "tsx src/cli.ts",
-    "verify": "tsx src/cli.ts acceptance experiments"
+    "verify": "tsx src/cli.ts acceptance experiments/v2",
+    "verify:legacy": "tsx src/cli.ts acceptance experiments --legacy"
   },
   "dependencies": { "zod": "^4.1.0" },
   "devDependencies": { "@types/node": "^24.0.0", "tsx": "^4.20.0", "typescript": "^5.9.0" }

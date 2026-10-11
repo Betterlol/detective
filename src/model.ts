@@ -12,7 +12,7 @@ const effectSchema = z.object({
   kind: z.enum(['knowledge', 'evidence', 'claim', 'flag']), id,
 }).strict();
 
-export const caseSchema = z.object({
+export const legacyCaseSchema = z.object({
   version: z.literal('1.0'), id, title: text, theme: text, prologue: text,
   characters: z.array(z.object({
     id, name: text, role: text, publicDescription: text,
@@ -59,14 +59,49 @@ export const caseSchema = z.object({
   ending: z.object({ requires: conditionSchema, text }).strict(),
 }).strict();
 
+const moods = z.enum(['calm', 'nervous', 'angry', 'shaken', 'resolved']);
+const moodChanges = z.array(z.object({ characterId: id, mood: moods }).strict()).max(6);
+const pressSchema = z.object({
+  requires: conditionSchema, text, repeatText: text,
+  effects: z.array(effectSchema).min(1).max(6), moodChanges,
+}).strict();
+const attributionSchema = z.object({
+  actorId: id, actFactIds: ids.min(1),
+  excludedActors: z.array(z.object({
+    characterId: id, knowledgeIds: ids.min(1), explanation: text,
+  }).strict()).min(1).max(5),
+}).strict();
+export const caseV2Schema = legacyCaseSchema.extend({
+  version: z.literal('2.0'),
+  knowledge: legacyCaseSchema.shape.knowledge.max(24),
+  evidence: legacyCaseSchema.shape.evidence.max(10),
+  claims: z.array(legacyCaseSchema.shape.claims.element.extend({
+    locationId: id, replacesClaimId: id.nullable(), press: pressSchema.nullable(),
+  }).strict()).min(2).max(8),
+  actions: z.array(legacyCaseSchema.shape.actions.element.extend({ kind: z.enum(['inspect', 'talk']), moodChanges }).strict()).min(4).max(14),
+  inferences: z.array(legacyCaseSchema.shape.inferences.element.extend({
+    kind: z.enum(['contradiction', 'mechanism', 'identity']),
+    effects: z.array(effectSchema).max(6), moodChanges,
+    attribution: attributionSchema.nullable(),
+    argument: legacyCaseSchema.shape.inferences.element.shape.argument.extend({
+      alternatives: z.array(z.object({ explanation: text, knowledgeIds: ids.min(1) }).strict()).min(1).max(6),
+    }).strict(),
+  }).strict()).min(3).max(5),
+  resolution: z.object({ identityInferenceId: id, actFactId: id, suspectIds: ids.min(2) }).strict(),
+}).strict();
+export const caseSchema = z.discriminatedUnion('version', [legacyCaseSchema, caseV2Schema]);
+export type CaseV2 = z.infer<typeof caseV2Schema>;
 export type Case = z.infer<typeof caseSchema>;
 export type State = {
   locationId: string; knowledge: string[]; evidence: string[]; claims: string[];
   flags: string[]; completed: string[]; solved: string[]; ended: boolean;
+  pressed?: string[]; refuted?: string[]; moods?: Record<string, z.infer<typeof moods>>;
 };
 export type Command =
   | { kind: 'move'; id: string }
   | { kind: 'act'; id: string }
+  | { kind: 'press'; id: string }
+  | { kind: 'present'; id: string; claimId: string; optionId: string; evidenceIds: string[] }
   | { kind: 'reason'; id: string; optionId: string; evidenceIds: string[] };
 export type Result = { ok: boolean; status: string; state: State; text: string[] };
-export const jsonSchema = z.toJSONSchema(caseSchema);
+export const jsonSchema = z.toJSONSchema(caseV2Schema);

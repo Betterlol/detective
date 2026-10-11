@@ -1,16 +1,38 @@
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
-import { join } from 'node:path';
+import { join, dirname, relative, resolve } from 'node:path';
+import { access } from 'node:fs/promises';
 import { caseSchema, jsonSchema, type Command } from './model.js';
 import { generate } from './generate.js';
 import { audit, replay } from './validate.js';
 import { initialState, opening, playerView, transition } from './engine.js';
-import { readJson, saveJson } from './io.js';
+import { hash, readJson, saveJson } from './io.js';
+import { resolvePlayerCommand } from './public.js';
 
 const [command, ...args] = process.argv.slice(2);
 const flag = (name: string, fallback?: string) => { const n = args.indexOf('--' + name); return n >= 0 ? args[n + 1] : fallback; };
 async function main() {
-  if (command === 'schema') { await saveJson(args[0] || 'schema/case.schema.json', jsonSchema); return; }
+  if (command === 'schema') { await saveJson(args[0] || 'schema/case-v2.schema.json', jsonSchema); return; }
+  if (command === 'blind') {
+    const out = flag('out');
+    if (!args[0] || !out) throw new Error('blind 案件.json --out 新试玩目录 [--bind]');
+    const c = caseSchema.parse(await readJson(args[0]));
+    if (!audit(c).ok) throw new Error('案件未通过基础检查');
+    try { await access(out); throw new Error('试玩目录已存在，请使用新目录以保留历史'); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+    const binding = relative(resolve(dirname(args[0])), resolve(out));
+    if (args.includes('--bind') && !/^[\w-]+$/.test(binding)) throw new Error('绑定试玩必须存于案件目录下的新直接子目录');
+    const { blindPlay } = await import('./blind-player.js');
+    const { modelConfig } = await import('./provider.js');
+    const config = modelConfig();
+    await saveJson(join(out, 'provenance.json'), { caseHash: hash(c), config, startedAt: new Date().toISOString() });
+    const result = await blindPlay(c, out, config);
+    if (result.ok && args.includes('--bind')) await saveJson(join(dirname(args[0]), 'player-verification.json'), {
+      caseHash: hash(c), directory: binding, reason: '使用当前程序重新进行公开视角模型试玩；原生成试玩记录保留。',
+    });
+    console.log(JSON.stringify({ ok: result.ok, decisions: result.decisions.length, mistakes: result.reasoningMistakes, out }));
+    if (!result.ok) process.exitCode = 1; return;
+  }
   if (command === 'generate') {
     const theme = flag('theme'), out = flag('out');
     if (!theme || !out) throw new Error('generate --theme "主题" --out experiments/新目录 [--constraints "约束"] [--repairs 2]');
@@ -18,6 +40,14 @@ async function main() {
     const manifest = await generate({ theme, out, constraints: flag('constraints', '微型完整中文案件；至少一处公平的关键推理')!,
       maxRepairs: Number(flag('repairs', '2')), source: source ? await readJson(source) : undefined, injected: args.includes('--injected') });
     console.log(JSON.stringify(manifest, null, 2)); if (manifest.status !== 'accepted') process.exitCode = 1; return;
+  }
+  if (command === 'repair') {
+    const feedback = flag('feedback');
+    if (!args[0] || !feedback) throw new Error('repair 实验目录 --feedback 反馈.json [--repairs 3]');
+    const result = await generate({ theme: '', constraints: '', out: args[0], resume: true,
+      feedback: await readJson(feedback), maxRepairs: flag('repairs') ? Number(flag('repairs')) : undefined });
+    console.log(JSON.stringify({ status: result.status, acceptedAttempt: result.acceptedAttempt }));
+    if (result.status !== 'accepted') process.exitCode = 1; return;
   }
   if (command === 'validate') {
     if (!args[0]) throw new Error('validate 案件.json [--out 报告.json]');
@@ -45,21 +75,25 @@ async function main() {
     const c = caseSchema.parse(await readJson(args[0])); let s = initialState(c);
     const rl = createInterface({ input: stdin, output: stdout }); const commands: Command[] = [];
     console.log(opening(c).join('\n'));
-    console.log('输入 move 地点ID / act 行动ID / reason 推理ID 选项ID 证物ID,证物ID / notebook / quit。错误尝试无惩罚。');
+    console.log('输入 move 地点编号 / act 行动编号 / press 证词编号 / present 问题编号 证词编号 选项编号 证物编号,证物编号 / reason 问题编号 选项编号 证物编号,证物编号 / notebook / quit。错误尝试无惩罚。');
     try {
       while (!s.ended) {
         const view = playerView(c, s);
         console.log(`\n当前位置：${view.location!.name}`);
         console.log('地点：' + view.locations.map(x => `${x.id}（${x.name}）`).join(' / '));
         console.log('调查：' + view.actions.map(x => `${x.id}（${x.label}${x.completed ? '；已调查' : ''}）`).join(' / '));
+        console.log('追问：' + view.presses.filter(x => !x.completed).map(x => `${x.id}（${x.text}）`).join(' / '));
         for (const i of view.inferences.filter(x => !x.solved)) {
-          console.log(`推理 ${i.id}：${i.question}`); for (const o of i.options) console.log(`  ${o.id}：${o.text}`);
+          console.log(`问题 ${i.id}${i.claimId ? `，针对证词 ${i.claimId}` : ''}：${i.question}`); for (const o of i.options) console.log(`  ${o.choice}：${o.text}`);
         }
         const answer = (await rl.question('> ')).trim();
         if (answer === 'quit') break;
         if (answer === 'notebook') { console.log(JSON.stringify({ knowledge: view.knowledge, evidence: view.evidence, claims: view.claims }, null, 2)); continue; }
-        const [kind, id, optionId, evidence] = answer.split(/\s+/);
-        const cmd: Command | null = kind === 'move' && id ? { kind, id } : kind === 'act' && id ? { kind, id } : kind === 'reason' && id && optionId ? { kind, id, optionId, evidenceIds: evidence ? evidence.split(',') : [] } : null;
+        const [kind, id, arg1, arg2, arg3] = answer.split(/\s+/);
+        const input = kind === 'move' || kind === 'act' || kind === 'press' ? { kind, id } :
+          kind === 'reason' ? { kind, id, optionId: arg1, evidenceIds: arg2 ? arg2.split(',') : [] } :
+          kind === 'present' ? { kind, id, claimId: arg1, optionId: arg2, evidenceIds: arg3 ? arg3.split(',') : [] } : null;
+        const cmd = resolvePlayerCommand(c, s, input);
         if (!cmd) { console.log('请按提示输入。'); continue; }
         const result = transition(c, s, cmd); console.log(result.text.join('\n')); s = result.state;
         if (result.ok && result.status !== 'repeat') commands.push(cmd);
@@ -68,8 +102,9 @@ async function main() {
     } finally { rl.close(); }
     return;
   }
-  if (command === 'acceptance') { const { acceptance } = await import('./acceptance.js'); const r = await acceptance(args[0] || 'experiments'); if (!r.ok) process.exitCode = 1; return; }
+  if (command === 'acceptance') { const { acceptance } = await import('./acceptance.js'); const r = await acceptance(args[0] || 'experiments/v2', args.includes('--legacy')); if (!r.ok) process.exitCode = 1; return; }
+  if (command === 'report') { const { experimentReport } = await import('./experiment-report.js'); const r = await experimentReport(args[0] || 'experiments/v2'); console.log(JSON.stringify({ calls: r.callCount, completed: r.completedCalls })); return; }
   if (command === 'mutate') { const { mutationChecks } = await import('./acceptance.js'); if (!args[0]) throw new Error('mutate 案件.json --out defects/目录'); const c = caseSchema.parse(await readJson(args[0])); await mutationChecks(c, flag('out', join('experiments', 'defects'))!); return; }
-  console.log('用法：npm run lab -- schema | generate | validate | replay | play | mutate | acceptance。详见 README。');
+  console.log('用法：npm run lab -- schema | generate | repair | validate | replay | play | blind | mutate | acceptance | report。详见 README。');
 }
 main().catch(e => { console.error(String(e)); process.exitCode = 1; });
