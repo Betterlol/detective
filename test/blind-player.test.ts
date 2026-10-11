@@ -2,11 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fixtureV2 } from './v2fixture.js';
 import { initialState, playerView, transition } from '../src/engine.js';
-import { blindPlay, blindTranscriptValid, playerPacket, playerPrompt, type BlindRecord, type PublicEvent } from '../src/blind-player.js';
-import { mkdtemp } from 'node:fs/promises';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { removeTempDirectory } from '../src/sdk-run.js';
+import { blindTranscriptValid, playerPacket, playerPrompt, type BlindRecord, type PublicEvent } from '../src/blind-player.js';
 import { audit } from '../src/validate.js';
 import { orderedOptions, publicId } from '../src/public.js';
 
@@ -54,28 +50,4 @@ test('blind prompts target public IDs and verification binds each decision to it
   assert.equal(blindTranscriptValid(c, future), false);
   const altered = structuredClone(record); altered.decisions[0]!.input.view = playerView(c, state);
   assert.equal(blindTranscriptValid(c, altered), false);
-});
-
-test('the complete blind driver works when author inference IDs differ from public handles', async () => {
-  const c = fixtureV2();
-  c.resolution.identityInferenceId = 'author_' + c.resolution.identityInferenceId;
-  for (const i of c.inferences) i.id = 'author_' + i.id;
-  assert.equal(audit(c).ok, true);
-  const dir = await mkdtemp(join(tmpdir(), 'detective-blind-driver-test-'));
-  try {
-    const result = await blindPlay(c, dir, { provider: 'codex', model: 'software-fixture', timeoutMs: 1000 }, 12, async prompt => {
-      const target = /公开问题编号 (d[1-9][0-9]*)/.exec(prompt)![1]!;
-      const packet = JSON.parse(prompt.slice(prompt.lastIndexOf('玩家输入：') + '玩家输入：'.length)) as ReturnType<typeof playerPacket>;
-      assert.ok(packet.view.inferences.some(x => x.id === target));
-      assert.equal(prompt.includes('author_d'), false);
-      // A software fixture supplies a valid decision; this is not model-generation evidence.
-      const i = c.inferences[Number(target.slice(1)) - 1]!, solution = i.solutions[0]!;
-      return JSON.stringify({ command: { kind: i.claimId ? 'present' : 'reason', id: target,
-        claimId: i.claimId ? publicId(c, 'claims', i.claimId) : null,
-        optionId: orderedOptions(c, i).find(x => x.internalId === solution.optionId)!.choice,
-        evidenceIds: solution.evidenceIds.map(x => publicId(c, 'evidence', x)) }, reasoning: 'software fixture' });
-    });
-    assert.equal(result.ok, true); assert.equal(result.decisions.length, c.inferences.length);
-    assert.equal(blindTranscriptValid(c, result), true);
-  } finally { await removeTempDirectory(dir, tmpdir(), 'detective-blind-driver-test-'); }
 });

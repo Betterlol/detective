@@ -4,11 +4,10 @@ import type { Case } from './model.js';
 import { audit } from './validate.js';
 import { hash, readJson, saveJson } from './io.js';
 import { verifyAcceptedExperiment, type AcceptedCaseSummary, type AcceptanceManifest } from './experiment-verification.js';
-import { defaultDetectiveConfig } from './config.js';
 
 type MutationReport = { ok: boolean; sourceCaseHash: string; results: { name: string; expectedCode: string; detected: boolean }[] };
 
-export async function mutationChecks(c: Case, dir: string, limit = defaultDetectiveConfig.validation.searchStateLimit) {
+export async function mutationChecks(c: Case, dir: string) {
   const tests: { name: string; mutate: (copy: Case) => void; code: string }[] = [
     { name: 'dangling-reference', mutate: x => { x.actions[0]!.targetId = 'missing_entity'; }, code: 'reference' },
     { name: 'illegal-effect', mutate: x => { (x.actions[0]!.effects[0] as { kind: string }).kind = 'erase_truth'; }, code: 'schema' },
@@ -34,7 +33,7 @@ export async function mutationChecks(c: Case, dir: string, limit = defaultDetect
   const results = [];
   for (const t of tests) {
     const copy = structuredClone(c); t.mutate(copy);
-    const report = audit(copy, limit), detected = report.issues.some(i => i.code === t.code);
+    const report = audit(copy), detected = report.issues.some(i => i.code === t.code);
     await saveJson(join(dir, t.name, 'case.json'), copy); await saveJson(join(dir, t.name, 'audit.json'), report);
     results.push({ name: t.name, expectedCode: t.code, detected, issues: report.issues });
   }
@@ -42,7 +41,7 @@ export async function mutationChecks(c: Case, dir: string, limit = defaultDetect
   await saveJson(join(dir, 'mutations.json'), result); console.log(`缺陷检验 ${results.filter(x => x.detected).length}/${results.length}`); return result;
 }
 
-export async function acceptance(root: string, legacy = false, limit = defaultDetectiveConfig.validation.searchStateLimit) {
+export async function acceptance(root: string, legacy = false) {
   const cases: AcceptedCaseSummary[] = [], experiments = [], problems: string[] = [];
   let repaired = false;
   for (const entry of await readdir(root, { withFileTypes: true })) {
@@ -53,7 +52,7 @@ export async function acceptance(root: string, legacy = false, limit = defaultDe
     catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue; throw e; }
     experiments.push({ directory: entry.name, ...manifest });
     if (manifest.status !== 'accepted' || manifest.acceptedAttempt === null) continue;
-    const verification = await verifyAcceptedExperiment(dir, entry.name, manifest, legacy, limit);
+    const verification = await verifyAcceptedExperiment(dir, entry.name, manifest, legacy);
     if (verification.problem) problems.push(verification.problem);
     if (verification.caseSummary) cases.push(verification.caseSummary);
     if (verification.repaired) repaired = true;
@@ -66,7 +65,7 @@ export async function acceptance(root: string, legacy = false, limit = defaultDe
   catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
   if (mutation) {
     for (const item of mutation.results) {
-      const checked = audit(await readJson(join(root, 'defects', item.name, 'case.json')), limit);
+      const checked = audit(await readJson(join(root, 'defects', item.name, 'case.json')));
       item.detected = checked.issues.some(x => x.code === item.expectedCode);
       await saveJson(join(root, 'defects', item.name, legacy ? 'compatibility-v2.json' : 'verification.json'), checked);
     }

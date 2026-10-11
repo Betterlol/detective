@@ -3,11 +3,10 @@ import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { Case, State } from './model.js';
 import { initialState, opening, playerView, transition } from './engine.js';
-import { resolvePlayerCommand } from './public.js';
+import { publicId, resolvePlayerCommand } from './public.js';
 import { renderPrompt } from './prompt-template.js';
 import { callModel, type ModelConfig } from './provider.js';
 import { hash, saveJson } from './io.js';
-import { defaultDetectiveConfig, type DetectiveConfig } from './config.js';
 
 export const playerDecisionSchema = z.object({
   command: z.object({ kind: z.enum(['reason', 'present']), id: z.string(), claimId: z.string().nullable(),
@@ -19,35 +18,11 @@ export type PublicEvent = { command: unknown; status: string; ok: boolean; text:
 export function playerPacket(c: Case, s: State, transcript: PublicEvent[]) {
   return { opening: opening(c), view: playerView(c, s), transcript: structuredClone(transcript) };
 }
-export const playerPromptVersion = 'player-2.1';
-export type PlayerTemplate = { version: string; template: string; templateHash: string };
-export async function playerTemplate(): Promise<PlayerTemplate> {
-  const template = await readFile(new URL('../prompts/player-v2.md', import.meta.url), 'utf8');
-  return { version: playerPromptVersion, template, templateHash: hash(template) };
-}
-export async function playerPrompt(input: ReturnType<typeof playerPacket>, targetId: string, snapshot?: PlayerTemplate) {
+export const playerPromptVersion = 'player-2.0';
+export async function playerPrompt(input: ReturnType<typeof playerPacket>, targetId: string) {
   if (!input.view.inferences.some(x => x.id === targetId)) throw new Error('Target must be a visible public inference ID');
-  const source = snapshot ?? await playerTemplate();
-  return renderPrompt(source.template, { version: source.version, targetId, playerInput: JSON.stringify(input) });
-}
-export async function playerPromptMatches(input: ReturnType<typeof playerPacket>, prompt: string, snapshot?: PlayerTemplate) {
-  const sources: PlayerTemplate[] = [];
-  if (snapshot) {
-    if (snapshot.version !== 'player-2.1' || hash(snapshot.template) !== snapshot.templateHash ||
-      !snapshot.template.includes('{{playerInput}}') || !snapshot.template.includes('{{targetId}}')) return false;
-    sources.push(snapshot);
-  } else {
-    sources.push(await playerTemplate());
-    for (const name of ['player-2.0-original', 'player-2.0-public-target']) {
-      const template = await readFile(new URL(`../prompts/archive/${name}.md`, import.meta.url), 'utf8');
-      sources.push({ version: 'player-2.0', template, templateHash: hash(template) });
-    }
-  }
-  const normalize = (text: string) => text.replace(/\r\n/g, '\n').replace(/\n$/, '');
-  for (const source of sources) for (const target of input.view.inferences) {
-    if (normalize(await playerPrompt(input, target.id, source)) === normalize(prompt)) return true;
-  }
-  return false;
+  const template = await readFile(new URL('../prompts/player-v2.md', import.meta.url), 'utf8');
+  return renderPrompt(template, { version: playerPromptVersion, targetId, playerInput: JSON.stringify(input) });
 }
 export function replayPublic(c: Case, transcript: PublicEvent[]) {
   let state = initialState(c);
@@ -79,10 +54,7 @@ export function blindTranscriptValid(c: Case, record: BlindRecord): boolean {
     });
   } catch { return false; }
 }
-export async function blindPlay(c: Case, dir: string, config: ModelConfig,
-  maxDecisions = defaultDetectiveConfig.blindPlay.maxDecisions, modelCall: typeof callModel = callModel,
-  limits: DetectiveConfig['blindPlay'] = defaultDetectiveConfig.blindPlay) {
-  const template = await playerTemplate();
+export async function blindPlay(c: Case, dir: string, config: ModelConfig, maxDecisions = 12) {
   let state = initialState(c), steps = 0;
   const transcript: PublicEvent[] = [], decisions: { input: ReturnType<typeof playerPacket>; output: z.infer<typeof playerDecisionSchema>; result: PublicEvent }[] = [];
   const mistakes = new Map<string, number>();
@@ -94,14 +66,14 @@ export async function blindPlay(c: Case, dir: string, config: ModelConfig,
   }
   // Investigation is an exhaustive public-action driver; only reasoning is delegated to the model.
   // No solutions, author premise maps, or omniscient search result are ever used to select a move.
-  while (!state.ended && decisions.length < maxDecisions && steps < limits.maxSteps) {
+  while (!state.ended && decisions.length < maxDecisions && steps < 160) {
     let activity = false;
     const questions: { locationId: string; inferenceId: string }[] = [];
     const locations = playerView(c, state).locations;
     for (const loc of locations) {
-      if (state.ended || steps >= limits.maxSteps) break;
+      if (state.ended) break;
       if (playerView(c, state).location.id !== loc.id) execute({ kind: 'move', id: loc.id });
-      for (let n = 0; n < limits.maxActionsPerLocation && steps < limits.maxSteps; n++) {
+      for (let n = 0; n < 40; n++) {
         const view = playerView(c, state);
         const action = view.actions.find(x => !x.completed);
         const press = view.presses.find(x => !x.completed);
@@ -111,16 +83,14 @@ export async function blindPlay(c: Case, dir: string, config: ModelConfig,
       }
       for (const i of playerView(c, state).inferences.filter(x => !x.solved)) questions.push({ locationId: loc.id, inferenceId: i.id });
     }
-    if (state.ended || steps >= limits.maxSteps) break;
-    const pending = questions.find(x => (mistakes.get(x.inferenceId) || 0) < limits.maxMistakesPerInference);
+    if (state.ended) break;
+    const pending = questions.find(x => (mistakes.get(x.inferenceId) || 0) < 3);
     if (!pending) { if (!activity) break; continue; }
     if (playerView(c, state).location.id !== pending.locationId) execute({ kind: 'move', id: pending.locationId });
-    if (steps >= limits.maxSteps) break;
     const input = playerPacket(c, state, transcript);
-    const prompt = await playerPrompt(input, pending.inferenceId, template);
+    const prompt = await playerPrompt(input, publicId(c, 'inferences', pending.inferenceId));
     const callDir = join(dir, `decision-${decisions.length}`);
-    await saveJson(join(callDir, 'prompt-template.json'), template);
-    const raw = await modelCall(prompt, z.toJSONSchema(playerDecisionSchema), callDir, config);
+    const raw = await callModel(prompt, z.toJSONSchema(playerDecisionSchema), callDir, config);
     const output = playerDecisionSchema.parse(JSON.parse(raw));
     const result = execute(output.command);
     decisions.push({ input, output, result });
@@ -128,10 +98,9 @@ export async function blindPlay(c: Case, dir: string, config: ModelConfig,
     await saveJson(join(dir, 'progress.json'), { ended: state.ended, decisions, transcript });
   }
   const result = { ok: state.ended, ended: state.ended, steps, decisions, transcript, finalState: state,
-    promptVersion: template.version, promptTemplateHash: template.templateHash,
     reasoningMistakes: decisions.filter(x => !x.result.ok).length,
     method: '公开界面驱动穷尽调查/追问，模型仅凭已获文本决定论证与出示；无作者答案、真相或搜索路径输入。',
-    limits: `调查由程序驱动，非完整自主玩家或人类试玩；最多${maxDecisions}次推理判断、每题最多${limits.maxMistakesPerInference}次失败；最多${limits.maxSteps}步，每地点最多${limits.maxActionsPerLocation}个行动。`,
+    limits: '调查由程序驱动，非完整自主玩家或人类试玩；最多12次推理判断、每题最多3次失败。',
   };
   await saveJson(join(dir, 'playtest.json'), result); return result;
 }

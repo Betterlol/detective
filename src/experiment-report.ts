@@ -69,8 +69,8 @@ export async function experimentReport(root: string) {
   }
   const result = { generatedAt: new Date().toISOString(), calls, callCount: calls.length,
     completedCalls: calls.filter(x => x.completed).length,
-    phases: { design: calls.filter(x => /[\\/]design(?:[\\/]attempt-\d+)?$/.test(x.directory)).length,
-      content: calls.filter(x => !/[\\/]design[\\/]attempt-\d+$/.test(x.directory) && /[\\/]attempt-\d+(?:[\\/](?:build|polish|repair))?$/.test(x.directory)).length,
+    phases: { design: calls.filter(x => /[\\/]design$/.test(x.directory)).length,
+      content: calls.filter(x => /[\\/]attempt-\d+$/.test(x.directory)).length,
       review: calls.filter(x => /[\\/]review$/.test(x.directory)).length,
       player: calls.filter(x => /[\\/]decision-\d+$/.test(x.directory)).length },
     experiments, options,

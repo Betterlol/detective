@@ -4,9 +4,8 @@ import { publicId } from './public.js';
 import { isV2State } from './state-rules.js';
 import { replay } from './trace.js';
 import type { Issue } from './validation-types.js';
-import { defaultDetectiveConfig } from './config.js';
 
-export function search(c: Case, limit = defaultDetectiveConfig.validation.searchStateLimit) {
+export function search(c: Case, limit = 100_000) {
   const states: State[] = [initialState(c)], indexes = new Map([[stateKey(states[0]!), 0]]);
   const parents: ({ index: number; command: Command } | null)[] = [null], reverse: number[][] = [[]];
   const reachedEvidence = new Set<string>(), reachedKnowledge = new Set<string>(), endings: number[] = [];
