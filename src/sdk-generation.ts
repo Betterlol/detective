@@ -17,7 +17,6 @@ import { archivePlayerBinding, repairSource } from './repair-history.js';
 import { renderPrompt } from './prompt-template.js';
 import type { GenerateInput } from './generate.js';
 import type { GenerationAttempt } from './generation-attempt.js';
-import { ModelCallError } from './sdk-run.js';
 import { acquireGenerationLease } from './generation-lease.js';
 
 type AuthorHandle = Pick<AuthorSession, 'workspace' | 'state' | 'run'>;
@@ -150,8 +149,7 @@ async function generateSdkLocked(input: GenerateInput, overrides: Partial<Genera
         } catch (e) {
           record.status = 'author-failed'; record.diagnostics = String(e); feedback = { error: String(e) };
           await saveJson(join(out, directory, 'failure.json'), feedback);
-          const transport = await optionalJson(join(out, directory, 'transport.json')) as { exitCode?: number } | undefined;
-          if (e instanceof ModelCallError || transport?.exitCode === 1) record.consumesBudget = false;
+          record.consumesBudget = false;
           await save(); return false;
         }
         await save();
@@ -221,8 +219,7 @@ async function generateSdkLocked(input: GenerateInput, overrides: Partial<Genera
       } catch (e) {
         attempt.status = manifest.pendingDesignRevision ? 'design-revision-failed' : 'author-or-evaluation-failed'; attempt.diagnostics = String(e); feedback = { error: String(e) };
         await saveJson(join(out, directory, 'failure.json'), feedback); await save();
-        const state = author.state.stages.at(-1), transport = state ? await optionalJson(join(out, state.directory, 'transport.json')) as { exitCode?: number } | undefined : undefined;
-        if (e instanceof ModelCallError || transport?.exitCode === 1) attempt.consumesBudget = false;
+        attempt.consumesBudget = false;
         await save(); break;
       }
     }

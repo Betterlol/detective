@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { Case, State } from './model.js';
 import { initialState, opening, playerView, transition } from './engine.js';
-import { publicId, resolvePlayerCommand } from './public.js';
+import { resolvePlayerCommand } from './public.js';
 import { renderPrompt } from './prompt-template.js';
 import { callModel, type ModelConfig } from './provider.js';
 import { hash, saveJson } from './io.js';
@@ -78,7 +78,7 @@ export function blindTranscriptValid(c: Case, record: BlindRecord): boolean {
     });
   } catch { return false; }
 }
-export async function blindPlay(c: Case, dir: string, config: ModelConfig, maxDecisions = 12) {
+export async function blindPlay(c: Case, dir: string, config: ModelConfig, maxDecisions = 12, modelCall: typeof callModel = callModel) {
   const template = await playerTemplate();
   let state = initialState(c), steps = 0;
   const transcript: PublicEvent[] = [], decisions: { input: ReturnType<typeof playerPacket>; output: z.infer<typeof playerDecisionSchema>; result: PublicEvent }[] = [];
@@ -113,10 +113,10 @@ export async function blindPlay(c: Case, dir: string, config: ModelConfig, maxDe
     if (!pending) { if (!activity) break; continue; }
     if (playerView(c, state).location.id !== pending.locationId) execute({ kind: 'move', id: pending.locationId });
     const input = playerPacket(c, state, transcript);
-    const prompt = await playerPrompt(input, publicId(c, 'inferences', pending.inferenceId), template);
+    const prompt = await playerPrompt(input, pending.inferenceId, template);
     const callDir = join(dir, `decision-${decisions.length}`);
     await saveJson(join(callDir, 'prompt-template.json'), template);
-    const raw = await callModel(prompt, z.toJSONSchema(playerDecisionSchema), callDir, config);
+    const raw = await modelCall(prompt, z.toJSONSchema(playerDecisionSchema), callDir, config);
     const output = playerDecisionSchema.parse(JSON.parse(raw));
     const result = execute(output.command);
     decisions.push({ input, output, result });

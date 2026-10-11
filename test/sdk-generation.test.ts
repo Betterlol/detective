@@ -182,3 +182,15 @@ test('a live experiment lease prevents a second author from starting', async () 
   await assert.rejects(generateWithSdk({ theme: 'test', constraints: '', out: dir }, base.deps), /仍在运行/);
   assert.equal(base.resumed.length, 0);
 }));
+
+test('evaluation runtime failures do not exhaust content defect repairs', async () => withTemp(async dir => {
+  for (let n = 0; n < 6; n++) {
+    const base = services(dir); base.deps.blindPlay = async () => { throw new Error('evaluation program unavailable'); };
+    const result = await generateWithSdk({ theme: 'test', constraints: '', out: dir, resume: n > 0,
+      feedback: n > 0 ? { message: 'retry evaluation' } : undefined, maxRepairs: 0 }, base.deps);
+    assert.equal(result.status, 'failed');
+  }
+  const result = await generateWithSdk({ theme: '', constraints: '', out: dir, resume: true,
+    feedback: { message: 'evaluation restored' }, maxRepairs: 0 }, services(dir).deps);
+  assert.equal(result.status, 'accepted'); assert.equal(result.attempts.length, 7);
+}));
