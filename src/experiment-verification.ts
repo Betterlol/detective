@@ -56,7 +56,8 @@ export async function verifyAcceptedExperiment(dir: string, directory: string, m
       const call = join(playerDir, `decision-${n}`), decision = playtest.decisions[n]!;
       const prompt = await readFile(join(call, 'prompt.md'), 'utf8');
       const output = JSON.parse(await readFile(join(call, 'raw.json'), 'utf8'));
-      const promptMatchesPublicInput = decision.input.view.inferences.some(x => prompt === playerPrompt(decision.input, x.id));
+      const expectedPlayerPrompts = await Promise.all(decision.input.view.inferences.map(x => playerPrompt(decision.input, x.id)));
+      const promptMatchesPublicInput = expectedPlayerPrompts.includes(prompt);
       blindReproducible &&= promptMatchesPublicInput && hash(output) === hash(decision.output);
     }
   }

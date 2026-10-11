@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import type { Case, State } from './model.js';
 import { initialState, opening, playerView, transition } from './engine.js';
 import { publicId, resolvePlayerCommand } from './public.js';
+import { renderPrompt } from './prompt-template.js';
 import { callModel, type ModelConfig } from './provider.js';
 import { hash, saveJson } from './io.js';
 
@@ -16,13 +18,11 @@ export type PublicEvent = { command: unknown; status: string; ok: boolean; text:
 export function playerPacket(c: Case, s: State, transcript: PublicEvent[]) {
   return { opening: opening(c), view: playerView(c, s), transcript: structuredClone(transcript) };
 }
-export function playerPrompt(input: ReturnType<typeof playerPacket>, targetId: string) {
+export const playerPromptVersion = 'player-2.0';
+export async function playerPrompt(input: ReturnType<typeof playerPacket>, targetId: string) {
   if (!input.view.inferences.some(x => x.id === targetId)) throw new Error('Target must be a visible public inference ID');
-  return `# 玩家视角试玩 player-2.0
-你扮演侦探，只能使用所给界面、已获笔记与实际呈现记录，不知道作者真相或正确答案。不要工具、文件、委派。只输出指定 Schema。
-当前目标是公开问题编号 ${targetId}。从玩家输入中该问题的公开选项里选择你认为成立的论证，提交支持它的已持有证物编号。若问题绑定 claimId，用 present 并填该具体证词编号；否则 reason 且 claimId=null。id、optionId、evidenceIds 只能引用公开编号；不要猜内部ID。解释证据如何支持判断，考虑来源、限制与替代解释。
-错误反馈如果已经出现，请重新依据材料判断；不凭选项篇幅或位置猜答案。你不会得到作者答案；缺乏依据时也必须记录自己的最佳判断，系统会保留失败。
-玩家输入：${JSON.stringify(input)}`;
+  const template = await readFile(new URL('../prompts/player-v2.md', import.meta.url), 'utf8');
+  return renderPrompt(template, { version: playerPromptVersion, targetId, playerInput: JSON.stringify(input) });
 }
 export function replayPublic(c: Case, transcript: PublicEvent[]) {
   let state = initialState(c);
@@ -88,7 +88,7 @@ export async function blindPlay(c: Case, dir: string, config: ModelConfig, maxDe
     if (!pending) { if (!activity) break; continue; }
     if (playerView(c, state).location.id !== pending.locationId) execute({ kind: 'move', id: pending.locationId });
     const input = playerPacket(c, state, transcript);
-    const prompt = playerPrompt(input, publicId(c, 'inferences', pending.inferenceId));
+    const prompt = await playerPrompt(input, publicId(c, 'inferences', pending.inferenceId));
     const callDir = join(dir, `decision-${decisions.length}`);
     const raw = await callModel(prompt, z.toJSONSchema(playerDecisionSchema), callDir, config);
     const output = playerDecisionSchema.parse(JSON.parse(raw));

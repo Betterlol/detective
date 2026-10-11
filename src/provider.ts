@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
-import { saveJson, saveText } from './io.js';
+import { hash, saveJson, saveText } from './io.js';
 
 export type ModelConfig = { provider: 'codex' | 'responses'; model: string; timeoutMs: number };
 export function modelConfig(): ModelConfig {
@@ -27,7 +27,7 @@ async function codexCommand(): Promise<{ executable: string; prefix: string[] }>
 export async function callModel(prompt: string, schema: unknown, dir: string, config = modelConfig()): Promise<string> {
   await saveText(join(dir, 'prompt.md'), prompt);
   await saveJson(join(dir, 'schema.json'), schema);
-  await saveJson(join(dir, 'request.json'), { ...config, startedAt: new Date().toISOString(), toolUse: false });
+  await saveJson(join(dir, 'request.json'), { ...config, promptHash: hash(prompt), startedAt: new Date().toISOString(), toolUse: false });
   if (config.provider === 'responses') {
     const key = process.env.OPENAI_API_KEY;
     if (!key) throw new Error('responses 接入需要 OPENAI_API_KEY');

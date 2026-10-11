@@ -8,6 +8,7 @@ import { designCase, designPromptVersion } from './design.js';
 import { randomUUID } from 'node:crypto';
 import { repairSource } from './repair-history.js';
 import { runGenerationAttempt, type GenerationAttempt } from './generation-attempt.js';
+import { playerPromptVersion } from './blind-player.js';
 
 export type GenerateInput = { theme: string; constraints: string; out: string; maxRepairs?: number; source?: unknown; injected?: boolean; resume?: boolean; feedback?: unknown };
 export async function generate(input: GenerateInput) {
@@ -20,7 +21,7 @@ export async function generate(input: GenerateInput) {
   const config = modelConfig(); let maxRepairs = input.maxRepairs ?? 2;
   if (!Number.isInteger(maxRepairs) || maxRepairs < 0 || maxRepairs > 5) throw new Error('maxRepairs 必须为0至5');
   let manifest = { version: 'experiment-2.0', contentVersion: '2.0', theme: input.theme, constraints: input.constraints,
-    designPromptVersion, promptVersion: 'create-2.0', promptHash: hash(template), reviewPromptVersion, config, maxRepairs,
+    designPromptVersion, promptVersion: 'create-2.0', promptHash: hash(template), reviewPromptVersion, playerPromptVersion, config, maxRepairs,
     kind: input.injected ? 'injected-defect-repair' : 'natural-generation',
     startedAt: new Date().toISOString(), completedAt: null as string | null, status: 'running',
     attempts: [] as GenerationAttempt[],
@@ -43,7 +44,9 @@ export async function generate(input: GenerateInput) {
       prior.status = 'additional-review-failed'; prior.diagnostics = { priorDiagnostics: prior.diagnostics, additionalReview: input.feedback };
     }
     manifest.status = 'running'; manifest.acceptedAttempt = null; manifest.acceptedCaseHash = null;
-    manifest.completedAt = null; manifest.maxRepairs = maxRepairs; manifest.config = config; manifest.reviewPromptVersion = reviewPromptVersion;
+    manifest.completedAt = null; manifest.maxRepairs = maxRepairs; manifest.config = config;
+    manifest.designPromptVersion = designPromptVersion; manifest.reviewPromptVersion = reviewPromptVersion;
+    manifest.playerPromptVersion = playerPromptVersion; manifest.promptHash = hash(template);
   } else {
     await saveJson(join(input.out, 'manifest.json'), manifest);
     console.log(`[${input.out}] 真相与身份论证设计`);

@@ -12,11 +12,11 @@ export function changes(before: unknown, after: unknown, path = '$'): { path: st
   return [{ path, before: before ?? null, after: after ?? null }];
 }
 export async function experimentReport(root: string) {
-  const calls: { directory: string; completed: boolean; elapsedMs: number | null; usage: unknown; model: string; itemTypes: string[] }[] = [];
+  const calls: { directory: string; completed: boolean; elapsedMs: number | null; usage: unknown; model: string; promptHash: string; itemTypes: string[] }[] = [];
   async function walk(dir: string) {
     const entries = await readdir(dir, { withFileTypes: true });
     if (entries.some(x => x.name === 'request.json')) {
-      const request = await readJson(join(dir, 'request.json')) as { model: string };
+      const request = await readJson(join(dir, 'request.json')) as { model: string; promptHash?: string };
       type Transport = { elapsedMs?: number; exitCode?: number; status?: number };
       let transport: Transport | null = null, usage: unknown = null; const itemTypes = new Set<string>();
       try { transport = await readJson(join(dir, 'transport.json')) as Transport; }
@@ -27,7 +27,8 @@ export async function experimentReport(root: string) {
         usage = events.find(x => x.type === 'turn.completed')?.usage ?? null;
         events.forEach(x => { if (x.item?.type) itemTypes.add(x.item.type); });
       } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
-      calls.push({ directory: dir, model: request.model, completed: transport?.exitCode === 0 || transport?.status === 200,
+      const promptHash = request.promptHash || hash(await readFile(join(dir, 'prompt.md'), 'utf8'));
+      calls.push({ directory: dir, model: request.model, promptHash, completed: transport?.exitCode === 0 || transport?.status === 200,
         elapsedMs: transport?.elapsedMs ?? null, usage, itemTypes: [...itemTypes] });
     }
     for (const entry of entries) if (entry.isDirectory()) await walk(join(dir, entry.name));

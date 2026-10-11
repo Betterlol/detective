@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fixtureV2 } from './v2fixture.js';
 import { initialState, playerView, transition } from '../src/engine.js';
-import { blindTranscriptValid, playerPacket, type BlindRecord, type PublicEvent } from '../src/blind-player.js';
+import { blindTranscriptValid, playerPacket, playerPrompt, type BlindRecord, type PublicEvent } from '../src/blind-player.js';
 import { audit } from '../src/validate.js';
 import { orderedOptions, publicId } from '../src/public.js';
 
@@ -15,9 +15,10 @@ test('blind player receives only public observations and a frozen transcript pre
   for (const hidden of ['SECRET_', 'privateMotive', 'solutions', 'attribution', 'culpritId', 'f_act', 'future']) assert.equal(text.includes(hidden), false);
 });
 
-test('blind verification requires one exact model record for every reasoning event and its past-only input', () => {
+test('blind prompts target public IDs and verification binds each decision to its past-only input', async () => {
   const c = fixtureV2(), transcript: PublicEvent[] = [], decisions: BlindRecord['decisions'] = [];
   let state = initialState(c);
+  let promptChecked = false;
   for (const step of audit(c).search!.replay!.steps) {
     const cmd = step.command;
     const input = playerPacket(c, state, transcript);
@@ -31,6 +32,13 @@ test('blind verification requires one exact model record for every reasoning eve
       };
     const r = transition(c, state, cmd);
     const event = { command, status: r.status, ok: r.ok, text: r.text };
+    if (!promptChecked && (cmd.kind === 'reason' || cmd.kind === 'present')) {
+      const publicInferenceId = publicId(c, 'inferences', cmd.id);
+      const prompt = await playerPrompt(input, publicInferenceId);
+      assert.ok(prompt.includes(`公开问题编号 ${publicInferenceId}`));
+      assert.equal(prompt.includes(`公开问题编号 ${cmd.id}`), false);
+      promptChecked = true;
+    }
     if (cmd.kind === 'reason' || cmd.kind === 'present') decisions.push({ input, output: { command }, result: event });
     transcript.push(event); state = r.state;
   }
