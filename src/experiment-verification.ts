@@ -4,7 +4,7 @@ import { caseSchema } from './model.js';
 import { audit, inferenceEvidence, replay } from './validate.js';
 import { hash, readJson, saveJson } from './io.js';
 import { reviewAccepted, reviewSchema, reviewV2Schema } from './review.js';
-import { blindTranscriptValid, playerPrompt, type BlindRecord } from './blind-player.js';
+import { blindTranscriptValid, playerPromptMatches, type BlindRecord, type PlayerTemplate } from './blind-player.js';
 
 export type AcceptanceManifest = {
   kind: string;
@@ -56,9 +56,15 @@ export async function verifyAcceptedExperiment(dir: string, directory: string, m
       const call = join(playerDir, `decision-${n}`), decision = playtest.decisions[n]!;
       const prompt = await readFile(join(call, 'prompt.md'), 'utf8');
       const output = JSON.parse(await readFile(join(call, 'raw.json'), 'utf8'));
-      const expectedPlayerPrompts = await Promise.all(decision.input.view.inferences.map(x => playerPrompt(decision.input, x.id)));
-      const promptMatchesPublicInput = expectedPlayerPrompts.includes(prompt);
-      blindReproducible &&= promptMatchesPublicInput && hash(output) === hash(decision.output);
+      let template: PlayerTemplate | undefined;
+      try { template = await readJson(join(call, 'prompt-template.json')) as PlayerTemplate; }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+      const request = await readJson(join(call, 'request.json')) as { promptHash?: string };
+      const promptMatchesPublicInput = await playerPromptMatches(decision.input, prompt, template);
+      const savedTemplateHash = (playtest as BlindRecord & { promptTemplateHash?: string }).promptTemplateHash;
+      const templateBound = savedTemplateHash ? !!template && template.templateHash === savedTemplateHash : !template;
+      const requestBound = request.promptHash ? request.promptHash === hash(prompt) : !template && !savedTemplateHash;
+      blindReproducible &&= promptMatchesPublicInput && templateBound && requestBound && hash(output) === hash(decision.output);
     }
   }
   const passed = a.ok && freshReplay.ended && reviewAccepted(c, review) && provenance && reproducible && visiblePremises && blindReproducible && (legacy || c.version === '2.0');
