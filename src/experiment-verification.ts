@@ -3,19 +3,21 @@ import { join } from 'node:path';
 import { caseSchema } from './model.js';
 import { audit, inferenceEvidence, replay } from './validate.js';
 import { hash, readJson, saveJson } from './io.js';
-import { reviewAccepted, reviewSchema, reviewV2Schema } from './review.js';
+import { reviewAccepted, reviewSchema, reviewV2Schema, type Review, type ReviewV2 } from './review.js';
 import { blindTranscriptValid, playerPromptMatches, type BlindRecord, type PlayerTemplate } from './blind-player.js';
 import { isolatedSdkRunValid, verifySdkProvenance } from './sdk-provenance.js';
 import type { SdkManifest } from './sdk-generation.js';
+import { defaultDetectiveConfig } from './config.js';
 
 export type AcceptanceManifest = {
   version?: string;
   kind: string;
   theme: string;
   status: string;
-  attempts: { index: number; status: string; kind: string }[];
+  attempts: { index: number; status: string; kind: string; skippedMechanisms?: string[] }[];
   acceptedAttempt: number | null;
   acceptedCaseHash: string | null;
+  settings?: { workflow?: { caseReview?: boolean; blindPlaytest?: boolean } };
 };
 export type AcceptedCaseSummary = {
   directory: string; version: '1.0' | '2.0'; theme: string; title: string; ok: boolean;
@@ -23,26 +25,42 @@ export type AcceptedCaseSummary = {
   blindDecisions: number; blindMistakes: number; acceptedAttempt: number | null; caseHash: string;
 };
 
-export async function verifyAcceptedExperiment(dir: string, directory: string, manifest: AcceptanceManifest, legacy: boolean) {
-  const c = caseSchema.parse(await readJson(join(dir, 'case.json'))), a = audit(c);
+export async function verifyAcceptedExperiment(dir: string, directory: string, manifest: AcceptanceManifest, legacy: boolean,
+  limit = defaultDetectiveConfig.validation.searchStateLimit) {
+  const c = caseSchema.parse(await readJson(join(dir, 'case.json'))), a = audit(c, limit);
   const storedReplay = await readJson(join(dir, 'replay.json')) as { steps: { command: Parameters<typeof replay>[1][number] }[] };
   const freshReplay = replay(c, storedReplay.steps.map(x => x.command));
   const evidenceSheet = inferenceEvidence(c, freshReplay);
   const verificationDir = c.version === '1.0' ? join(dir, 'compatibility-v2') : dir;
   await saveJson(join(verificationDir, 'inference-evidence.json'), evidenceSheet);
-  const review = (c.version === '2.0' ? reviewV2Schema : reviewSchema).parse(await readJson(join(dir, 'review.json')));
   const acceptedDir = join(dir, `attempt-${manifest.acceptedAttempt}`);
-  const originalReview = JSON.parse(await readFile(join(acceptedDir, 'review', 'raw.json'), 'utf8'));
+  const acceptedAttempt = manifest.attempts.find(x => x.index === manifest.acceptedAttempt);
+  const caseReviewEnabled = !acceptedAttempt?.skippedMechanisms?.includes('caseReview') && (manifest.settings?.workflow?.caseReview ?? true);
+  let review: Review | ReviewV2 | undefined;
+  let reviewProvenance = false;
+  if (caseReviewEnabled) {
+    review = (c.version === '2.0' ? reviewV2Schema : reviewSchema).parse(await readJson(join(dir, 'review.json')));
+    const originalReview = JSON.parse(await readFile(join(acceptedDir, 'review', 'raw.json'), 'utf8'));
+    reviewProvenance = hash(review) === hash(originalReview);
+  } else {
+    const skipped = await readJson(join(acceptedDir, 'review', 'skipped.json')) as { mechanism?: string };
+    reviewProvenance = skipped.mechanism === 'caseReview';
+  }
   const sdk = manifest.version === 'experiment-3.0' && c.version === '2.0' ? await verifySdkProvenance(dir, manifest as SdkManifest, c) : null;
   const original = sdk ? null : JSON.parse(await readFile(join(acceptedDir, 'raw.json'), 'utf8'));
-  const provenance = hash(c) === manifest.acceptedCaseHash && (sdk ? sdk.ok : hash(original) === hash(c)) && hash(review) === hash(originalReview);
+  const provenance = hash(c) === manifest.acceptedCaseHash && (sdk ? sdk.ok : hash(original) === hash(c)) && reviewProvenance;
   const coreTrace = (x: ReturnType<typeof replay>) => ({ ...x, steps: x.steps.map(({ playerBefore, ...step }) => step) });
   const reproducible = c.version === '1.0' ? hash(coreTrace(freshReplay)) === hash(coreTrace(storedReplay as ReturnType<typeof replay>)) : hash(freshReplay) === hash(storedReplay);
   const publicViewMigrated = hash(freshReplay) !== hash(storedReplay);
   const visiblePremises = evidenceSheet.every(x => x.premises.every(p => p.visibleBeforeReasoning) && x.prerequisites.every(p => p.presentBeforeReasoning));
-  let blindReproducible = legacy;
+  const blindPlaytestEnabled = !acceptedAttempt?.skippedMechanisms?.includes('blindPlaytest') && (manifest.settings?.workflow?.blindPlaytest ?? true);
+  let blindReproducible = legacy || !blindPlaytestEnabled;
   let blindDecisions = 0, blindMistakes = 0;
   if (c.version === '2.0') {
+    if (!blindPlaytestEnabled) {
+      const skipped = await readJson(join(acceptedDir, 'player', 'skipped.json')) as { mechanism?: string };
+      blindReproducible = skipped.mechanism === 'blindPlaytest';
+    } else {
     let playerDir = join(acceptedDir, 'player');
     try {
       const binding = await readJson(join(dir, 'player-verification.json')) as { caseHash: string; directory: string };
@@ -71,8 +89,10 @@ export async function verifyAcceptedExperiment(dir: string, directory: string, m
       blindReproducible &&= promptMatchesPublicInput && templateBound && requestBound && hash(output) === hash(decision.output);
       if (sdk) blindReproducible &&= await isolatedSdkRunValid(call, (manifest as SdkManifest).authorThreadId!);
     }
+    }
   }
-  const passed = a.ok && freshReplay.ended && reviewAccepted(c, review) && provenance && reproducible && visiblePremises && blindReproducible && (legacy || c.version === '2.0');
+  const reviewAcceptedWhenEnabled = !caseReviewEnabled || (!!review && reviewAccepted(c, review));
+  const passed = a.ok && freshReplay.ended && reviewAcceptedWhenEnabled && provenance && reproducible && visiblePremises && blindReproducible && (legacy || c.version === '2.0');
   await saveJson(join(verificationDir, 'verification.json'), { ok: passed, caseHash: hash(c), provenance, sdkProvenance: sdk, reproducible, visiblePremises, publicViewMigrated, blindReproducible, audit: a });
   const problem = passed ? null : `${directory} \u91cd\u65b0\u9a8c\u6536\u5931\u8d25`;
   const caseSummary = manifest.kind === 'natural-generation' ? {

@@ -1,0 +1,27 @@
+{
+  "model": {
+    "provider": "codex",
+    "timeoutMs": 480000
+  },
+  "generation": {
+    "defaultConstraints": "微型完整中文案件；至少一处公平的关键推理",
+    "maxRepairs": 2,
+    "maxDesignRepairs": 2,
+    "maxRepairBudget": 5
+  },
+  "workflow": {
+    "polish": true,
+    "foundationReview": true,
+    "caseReview": true,
+    "blindPlaytest": true
+  },
+  "validation": {
+    "searchStateLimit": 100000
+  },
+  "blindPlay": {
+    "maxDecisions": 12,
+    "maxSteps": 160,
+    "maxMistakesPerInference": 3,
+    "maxActionsPerLocation": 40
+  }
+}

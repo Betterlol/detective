@@ -6,6 +6,7 @@ import { audit } from './validate.js';
 import { caseV2Schema } from './model.js';
 import { hash, readJson } from './io.js';
 import type { Issue } from './validation-types.js';
+import { defaultDetectiveConfig } from './config.js';
 
 export const toolMarker = 'detective-validator-1.0';
 export type ToolMode = 'design' | 'case' | 'replay';
@@ -21,7 +22,8 @@ export async function readAuthorArtifact(workspace: string, name: 'design.json' 
   return readJson(file);
 }
 
-export async function checkAuthorWorkspace(workspace: string, mode: ToolMode): Promise<ToolReport> {
+export async function checkAuthorWorkspace(workspace: string, mode: ToolMode,
+  searchStateLimit = defaultDetectiveConfig.validation.searchStateLimit): Promise<ToolReport> {
   const root = await realpath(workspace);
   const result: ToolReport = { tool: toolMarker, mode, workspace: root, ok: false, issues: [], designHash: null, caseHash: null };
   try {
@@ -30,7 +32,7 @@ export async function checkAuthorWorkspace(workspace: string, mode: ToolMode): P
     if (!d.ok || !d.design) return result;
     if (mode === 'design') { result.ok = true; return result; }
     const rawCase = await readAuthorArtifact(root, 'case.json'); result.caseHash = hash(rawCase);
-    const parsed = caseV2Schema.safeParse(rawCase), a = audit(rawCase);
+    const parsed = caseV2Schema.safeParse(rawCase), a = audit(rawCase, searchStateLimit);
     result.issues = [...a.issues, ...(parsed.success ? designConsistency(d.design, parsed.data) : [])];
     result.ok = a.ok && parsed.success && !result.issues.some(x => x.severity !== 'warning');
     result.states = a.search?.states;
@@ -43,8 +45,10 @@ export async function checkAuthorWorkspace(workspace: string, mode: ToolMode): P
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [workspace, mode] = process.argv.slice(2);
+  const [workspace, mode, limitValue] = process.argv.slice(2);
   if (!workspace || !['design', 'case', 'replay'].includes(mode ?? '')) throw new Error('author-tools 内容目录 design|case|replay');
-  const report = await checkAuthorWorkspace(workspace, mode as ToolMode);
+  const limit = limitValue === undefined ? defaultDetectiveConfig.validation.searchStateLimit : Number(limitValue);
+  if (!Number.isInteger(limit) || limit <= 0) throw new Error('searchStateLimit must be a positive integer');
+  const report = await checkAuthorWorkspace(workspace, mode as ToolMode, limit);
   console.log(JSON.stringify(report)); if (!report.ok) process.exitCode = 1;
 }

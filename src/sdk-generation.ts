@@ -19,28 +19,35 @@ import type { GenerateInput } from './generate.js';
 import type { GenerationAttempt } from './generation-attempt.js';
 import { acquireGenerationLease } from './generation-lease.js';
 import { fixedModelConfig } from './model-policy.js';
+import { loadDetectiveConfig, type DetectiveConfig } from './config.js';
 
 type AuthorHandle = Pick<AuthorSession, 'workspace' | 'state' | 'run'>;
 export type GenerationServices = {
   config: () => ModelConfig;
-  openAuthor: (out: string, config: ModelConfig, resume: boolean) => Promise<AuthorHandle>;
+  openAuthor: (out: string, config: ModelConfig, resume: boolean, searchStateLimit: number) => Promise<AuthorHandle>;
   reviewDesign: typeof reviewDesign;
   reviewCase: typeof reviewCase;
-  blindPlay: (c: Parameters<typeof blindPlay>[0], out: string, config: ModelConfig) => Promise<BlindRecord & { reasoningMistakes: number }>;
+  blindPlay: (c: Parameters<typeof blindPlay>[0], out: string, config: ModelConfig, limits: DetectiveConfig['blindPlay']) => Promise<BlindRecord & { reasoningMistakes: number }>;
 };
-const defaults: GenerationServices = { config: modelConfig, openAuthor: (out, config, resume) => AuthorSession.open(out, config, resume), reviewDesign, reviewCase, blindPlay };
+const defaults: GenerationServices = { config: modelConfig,
+  openAuthor: (out, config, resume, searchStateLimit) => AuthorSession.open(out, config, resume, undefined, searchStateLimit), reviewDesign, reviewCase,
+  blindPlay: (c, out, config, limits) => blindPlay(c, out, config, limits.maxDecisions, undefined, limits) };
 export type SdkSource = { kind: 'sdk-file'; stageDirectory: string; artifactHash: string; threadId: string; designHash: string; foundationIndex: number };
 export type FoundationAttempt = { index: number; sourceDirectory: string; reviewDirectory: string; status: string;
-  sourceHash?: string; designHash?: string; threadId?: string; diagnostics?: unknown; consumesBudget?: boolean };
+  sourceHash?: string; designHash?: string; threadId?: string; diagnostics?: unknown; consumesBudget?: boolean; reviewSkipped?: boolean };
 export type SdkManifest = {
   version: 'experiment-3.0'; contentVersion: '2.0'; engine: 'codex-sdk'; theme: string; constraints: string;
   config: ModelConfig; kind: string; startedAt: string; completedAt: string | null; status: string;
+  settings: DetectiveConfig; skippedMechanisms: string[];
   maxRepairs: number; maxDesignRepairs: number; foundationAttempts: FoundationAttempt[];
   acceptedDesignHash: string | null; acceptedFoundation: number | null; authorThreadId: string | null;
   pendingDesignRevision?: boolean;
   attempts: (GenerationAttempt & { source?: SdkSource; consumesBudget?: boolean })[]; acceptedAttempt: number | null; acceptedCaseHash: string | null;
 };
-function budget(value: number) { if (!Number.isInteger(value) || value < 0 || value > 5) throw new Error('修复预算必须为0至5'); return value; }
+function budget(value: number, maximum: number) {
+  if (!Number.isInteger(value) || value < 0 || value > maximum) throw new Error(`修复预算必须为0至${maximum}`);
+  return value;
+}
 async function optionalJson(path: string) {
   try { return await readJson(path); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; return undefined; }
 }
@@ -56,8 +63,10 @@ export async function generateWithSdk(input: GenerateInput, overrides: Partial<G
 }
 
 async function generateSdkLocked(input: GenerateInput, overrides: Partial<GenerationServices>): Promise<SdkManifest> {
-  const services = { ...defaults, ...overrides }, config = fixedModelConfig(services.config()), out = resolve(input.out);
-  let maxRepairs = budget(input.maxRepairs ?? 2), maxDesignRepairs = budget(input.maxDesignRepairs ?? 2);
+  const services = { ...defaults, ...overrides }, settings = input.settings ?? await loadDetectiveConfig();
+  const config = fixedModelConfig(overrides.config ? services.config() : modelConfig(settings)), out = resolve(input.out);
+  let maxRepairs = budget(input.maxRepairs ?? settings.generation.maxRepairs, settings.generation.maxRepairBudget);
+  let maxDesignRepairs = budget(input.maxDesignRepairs ?? settings.generation.maxDesignRepairs, settings.generation.maxRepairBudget);
   if (config.provider !== 'codex') throw new Error('SDK 作者流程要求 Codex provider');
   if (!input.resume) {
     try { await access(join(out, 'manifest.json')); throw new Error('输出目录已有实验记录，请使用新目录'); }
@@ -65,7 +74,7 @@ async function generateSdkLocked(input: GenerateInput, overrides: Partial<Genera
   }
   await mkdir(out, { recursive: true });
   let manifest: SdkManifest = { version: 'experiment-3.0', contentVersion: '2.0', engine: 'codex-sdk', theme: input.theme, constraints: input.constraints,
-    config, kind: input.injected ? 'injected-defect-repair' : 'natural-generation', startedAt: new Date().toISOString(), completedAt: null,
+    config, settings, skippedMechanisms: [], kind: input.injected ? 'injected-defect-repair' : 'natural-generation', startedAt: new Date().toISOString(), completedAt: null,
     status: 'running', maxRepairs, maxDesignRepairs, foundationAttempts: [], acceptedDesignHash: null, acceptedFoundation: null,
     authorThreadId: null, attempts: [], acceptedAttempt: null, acceptedCaseHash: null };
   let feedback: unknown = input.feedback ?? null, previous = input.source, design: Design | undefined;
@@ -79,10 +88,12 @@ async function generateSdkLocked(input: GenerateInput, overrides: Partial<Genera
       if (record.status === 'running') { record.status = 'interrupted'; record.consumesBudget = false; }
     }
     previous = await repairSource(out, prior.attempts);
-    maxRepairs = budget(input.maxRepairs ?? prior.maxRepairs);
+    maxRepairs = budget(input.maxRepairs ?? prior.maxRepairs, settings.generation.maxRepairBudget);
     if (usedBudget(prior.attempts) > maxRepairs) throw new Error('已无内容修复预算，请增加 repairs');
     if (prior.version === 'experiment-3.0') {
-      manifest = prior; maxDesignRepairs = budget(input.maxDesignRepairs ?? prior.maxDesignRepairs);
+      manifest = prior; maxDesignRepairs = budget(input.maxDesignRepairs ?? prior.maxDesignRepairs, settings.generation.maxRepairBudget);
+      for (const foundation of manifest.foundationAttempts) if (foundation.reviewSkipped === undefined)
+        foundation.reviewSkipped = !(await optionalJson(join(out, foundation.reviewDirectory, 'review.json')));
       const state = await optionalJson(join(out, 'author-session.json')) as { threadId?: string } | undefined;
       resumeAuthor = !!state?.threadId;
       if (manifest.acceptedDesignHash && !manifest.pendingDesignRevision) {
@@ -103,11 +114,18 @@ async function generateSdkLocked(input: GenerateInput, overrides: Partial<Genera
     }
     manifest.acceptedAttempt = null; manifest.acceptedCaseHash = null; manifest.completedAt = null;
   }
-  manifest.config = config; manifest.maxRepairs = maxRepairs; manifest.maxDesignRepairs = maxDesignRepairs; manifest.status = 'running';
+  manifest.config = config; manifest.settings = settings; manifest.maxRepairs = maxRepairs; manifest.maxDesignRepairs = maxDesignRepairs;
+  manifest.skippedMechanisms = [
+    ...(!settings.workflow.polish ? ['polish'] : []),
+    ...(!settings.workflow.foundationReview ? ['foundationReview'] : []),
+    ...(!settings.workflow.caseReview ? ['caseReview'] : []),
+    ...(!settings.workflow.blindPlaytest ? ['blindPlaytest'] : []),
+  ];
+  manifest.status = 'running';
   const save = () => saveJson(join(out, 'manifest.json'), manifest);
   await save();
   let author: AuthorHandle;
-  try { author = await services.openAuthor(out, config, resumeAuthor); }
+  try { author = await services.openAuthor(out, config, resumeAuthor, settings.validation.searchStateLimit); }
   catch (e) {
     manifest.status = 'failed'; manifest.completedAt = new Date().toISOString();
     await saveJson(join(out, 'author-start-failure.json'), { error: String(e) }); await save(); return manifest;
@@ -126,12 +144,21 @@ async function generateSdkLocked(input: GenerateInput, overrides: Partial<Genera
       if (!checked.ok || !checked.design) { record.status = 'validation-failed'; record.diagnostics = checked.issues; feedback = checked; return false; }
       const d = checked.design; record.designHash = hash(d);
       console.log(`[${input.out}] 基石独立逻辑验收 ${record.index}`);
-      const review = await services.reviewDesign(d, join(out, record.reviewDirectory), config);
-      await saveJson(join(out, record.reviewDirectory, 'review.json'), review);
-      if (!designReviewAccepted(d, review)) { record.status = 'review-failed'; record.diagnostics = review; feedback = review; return false; }
+      let review: Awaited<ReturnType<typeof services.reviewDesign>> | undefined;
+      if (settings.workflow.foundationReview) {
+        record.reviewSkipped = false;
+        review = await services.reviewDesign(d, join(out, record.reviewDirectory), config);
+        await saveJson(join(out, record.reviewDirectory, 'review.json'), review);
+        if (!designReviewAccepted(d, review)) { record.status = 'review-failed'; record.diagnostics = review; feedback = review; return false; }
+      } else {
+        record.reviewSkipped = true;
+        await saveJson(join(out, record.reviewDirectory, 'skipped.json'), { mechanism: 'foundationReview', reason: 'disabled-by-config' });
+      }
       design = d; record.status = 'accepted'; manifest.acceptedFoundation = record.index; manifest.acceptedDesignHash = hash(d);
       manifest.pendingDesignRevision = false;
-      await saveJson(join(out, 'design/design.json'), d); await saveJson(join(out, 'design/review.json'), review);
+      await saveJson(join(out, 'design/design.json'), d);
+      if (review) await saveJson(join(out, 'design/review.json'), review);
+      else await saveJson(join(out, 'design/review-skipped.json'), { mechanism: 'foundationReview', reason: 'disabled-by-config' });
       await saveJson(join(author.workspace, 'design.json'), d); await save(); return true;
     }
     async function createFoundation() {
@@ -175,9 +202,12 @@ async function generateSdkLocked(input: GenerateInput, overrides: Partial<Genera
         console.log(`[${input.out}] 作者 ${attempt.kind} ${directory}`);
         let stageDirectory = `${directory}/${attempt.kind === 'create' ? 'build' : 'repair'}`;
         let run = await author.run(attempt.kind === 'create' ? 'build' : 'repair', `${prompt}\n先完成可执行取证、条件与推理关系。`, join(out, stageDirectory));
-        if (!run.requestDesignRevision && attempt.kind === 'create') {
+        if (!run.requestDesignRevision && attempt.kind === 'create' && settings.workflow.polish) {
           stageDirectory = `${directory}/polish`;
           run = await author.run('polish', `${prompt}\n可执行案件已存在。局部完善人物语气、悬念、追问、反驳与结局演出；事实和必要前提须保持一致，检查真实回放文字并重新校验。`, join(out, stageDirectory));
+        } else if (!run.requestDesignRevision && attempt.kind === 'create' && !settings.workflow.polish) {
+          attempt.skippedMechanisms = [...(attempt.skippedMechanisms ?? []), 'polish'];
+          await saveJson(join(out, directory, 'polish-skipped.json'), { mechanism: 'polish', reason: 'disabled-by-config' });
         }
         manifest.authorThreadId = run.threadId;
         if (run.requestDesignRevision) {
@@ -199,7 +229,7 @@ async function generateSdkLocked(input: GenerateInput, overrides: Partial<Genera
         await saveJson(join(out, directory, 'case.json'), rawCase);
         if (previous) await saveJson(join(out, directory, 'repair-diff.json'), { beforeHash: hash(previous), afterHash: hash(rawCase), changes: changes(previous, rawCase) });
         previous = rawCase;
-        const parsed = caseV2Schema.safeParse(rawCase), validation = audit(rawCase);
+        const parsed = caseV2Schema.safeParse(rawCase), validation = audit(rawCase, settings.validation.searchStateLimit);
         const consistency = parsed.success ? designConsistency(design!, parsed.data) : [];
         const checked = { ...validation, ok: validation.ok && consistency.length === 0, issues: [...validation.issues, ...consistency] };
         await saveJson(join(out, directory, 'audit.json'), checked); feedback = checked;
@@ -207,15 +237,35 @@ async function generateSdkLocked(input: GenerateInput, overrides: Partial<Genera
         const c = parsed.data, trace = checked.search.replay;
         attempt.caseHash = hash(c); attempt.source = { kind: 'sdk-file', stageDirectory, artifactHash: run.artifactHash,
           threadId: run.threadId, designHash: manifest.acceptedDesignHash!, foundationIndex: manifest.acceptedFoundation! };
-        const review = await services.reviewCase(c, trace, join(out, directory, 'review'), config);
-        await saveJson(join(out, directory, 'review/review.json'), review); feedback = { review };
-        if (!reviewAccepted(c, review)) { attempt.status = 'review-failed'; attempt.diagnostics = review; await save(); continue; }
-        const player = await services.blindPlay(c, join(out, directory, 'player'), config); feedback = { review, playerFeedback: player };
-        if (!player.ok) { attempt.status = 'player-failed'; attempt.diagnostics = player; await save(); continue; }
-        for (const [name, value] of Object.entries({ case: c, audit: checked, replay: trace, review, playtest: player, 'inference-evidence': inferenceEvidence(c, trace) }))
+        let review: Awaited<ReturnType<typeof services.reviewCase>> | undefined;
+        if (settings.workflow.caseReview) {
+          review = await services.reviewCase(c, trace, join(out, directory, 'review'), config);
+          await saveJson(join(out, directory, 'review/review.json'), review); feedback = { review };
+          if (!reviewAccepted(c, review)) { attempt.status = 'review-failed'; attempt.diagnostics = review; await save(); continue; }
+        } else {
+          attempt.skippedMechanisms = [...(attempt.skippedMechanisms ?? []), 'caseReview'];
+          await saveJson(join(out, directory, 'review/skipped.json'), { mechanism: 'caseReview', reason: 'disabled-by-config' });
+          feedback = { caseReview: 'skipped' };
+        }
+        let player: BlindRecord & { reasoningMistakes: number } | undefined;
+        if (settings.workflow.blindPlaytest) {
+          player = await services.blindPlay(c, join(out, directory, 'player'), config, settings.blindPlay);
+          feedback = { review: review ?? 'skipped', playerFeedback: player };
+          if (!player.ok) { attempt.status = 'player-failed'; attempt.diagnostics = player; await save(); continue; }
+        } else {
+          attempt.skippedMechanisms = [...(attempt.skippedMechanisms ?? []), 'blindPlaytest'];
+          await saveJson(join(out, directory, 'player/skipped.json'), { mechanism: 'blindPlaytest', reason: 'disabled-by-config' });
+          feedback = { review: review ?? 'skipped', blindPlaytest: 'skipped' };
+        }
+        const artifacts: Record<string, unknown> = { case: c, audit: checked, replay: trace, 'inference-evidence': inferenceEvidence(c, trace) };
+        if (review) artifacts.review = review;
+        if (player) artifacts.playtest = player;
+        for (const [name, value] of Object.entries(artifacts))
           await saveJson(join(out, `${name}.json`), value);
+        if (!review) await saveJson(join(out, 'review-skipped.json'), { mechanism: 'caseReview', reason: 'disabled-by-config' });
+        if (!player) await saveJson(join(out, 'playtest-skipped.json'), { mechanism: 'blindPlaytest', reason: 'disabled-by-config' });
         if (input.resume) await archivePlayerBinding(out, n);
-        attempt.status = 'accepted'; attempt.diagnostics = review.issues; manifest.status = 'accepted';
+        attempt.status = 'accepted'; attempt.diagnostics = review?.issues ?? []; manifest.status = 'accepted';
         manifest.acceptedAttempt = n; manifest.acceptedCaseHash = hash(c); await save(); break;
       } catch (e) {
         attempt.status = manifest.pendingDesignRevision ? 'design-revision-failed' : 'author-or-evaluation-failed'; attempt.diagnostics = String(e); feedback = { error: String(e) };

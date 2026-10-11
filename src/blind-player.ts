@@ -7,6 +7,7 @@ import { resolvePlayerCommand } from './public.js';
 import { renderPrompt } from './prompt-template.js';
 import { callModel, type ModelConfig } from './provider.js';
 import { hash, saveJson } from './io.js';
+import { defaultDetectiveConfig, type DetectiveConfig } from './config.js';
 
 export const playerDecisionSchema = z.object({
   command: z.object({ kind: z.enum(['reason', 'present']), id: z.string(), claimId: z.string().nullable(),
@@ -78,7 +79,9 @@ export function blindTranscriptValid(c: Case, record: BlindRecord): boolean {
     });
   } catch { return false; }
 }
-export async function blindPlay(c: Case, dir: string, config: ModelConfig, maxDecisions = 12, modelCall: typeof callModel = callModel) {
+export async function blindPlay(c: Case, dir: string, config: ModelConfig,
+  maxDecisions = defaultDetectiveConfig.blindPlay.maxDecisions, modelCall: typeof callModel = callModel,
+  limits: DetectiveConfig['blindPlay'] = defaultDetectiveConfig.blindPlay) {
   const template = await playerTemplate();
   let state = initialState(c), steps = 0;
   const transcript: PublicEvent[] = [], decisions: { input: ReturnType<typeof playerPacket>; output: z.infer<typeof playerDecisionSchema>; result: PublicEvent }[] = [];
@@ -91,14 +94,14 @@ export async function blindPlay(c: Case, dir: string, config: ModelConfig, maxDe
   }
   // Investigation is an exhaustive public-action driver; only reasoning is delegated to the model.
   // No solutions, author premise maps, or omniscient search result are ever used to select a move.
-  while (!state.ended && decisions.length < maxDecisions && steps < 160) {
+  while (!state.ended && decisions.length < maxDecisions && steps < limits.maxSteps) {
     let activity = false;
     const questions: { locationId: string; inferenceId: string }[] = [];
     const locations = playerView(c, state).locations;
     for (const loc of locations) {
-      if (state.ended) break;
+      if (state.ended || steps >= limits.maxSteps) break;
       if (playerView(c, state).location.id !== loc.id) execute({ kind: 'move', id: loc.id });
-      for (let n = 0; n < 40; n++) {
+      for (let n = 0; n < limits.maxActionsPerLocation && steps < limits.maxSteps; n++) {
         const view = playerView(c, state);
         const action = view.actions.find(x => !x.completed);
         const press = view.presses.find(x => !x.completed);
@@ -108,10 +111,11 @@ export async function blindPlay(c: Case, dir: string, config: ModelConfig, maxDe
       }
       for (const i of playerView(c, state).inferences.filter(x => !x.solved)) questions.push({ locationId: loc.id, inferenceId: i.id });
     }
-    if (state.ended) break;
-    const pending = questions.find(x => (mistakes.get(x.inferenceId) || 0) < 3);
+    if (state.ended || steps >= limits.maxSteps) break;
+    const pending = questions.find(x => (mistakes.get(x.inferenceId) || 0) < limits.maxMistakesPerInference);
     if (!pending) { if (!activity) break; continue; }
     if (playerView(c, state).location.id !== pending.locationId) execute({ kind: 'move', id: pending.locationId });
+    if (steps >= limits.maxSteps) break;
     const input = playerPacket(c, state, transcript);
     const prompt = await playerPrompt(input, pending.inferenceId, template);
     const callDir = join(dir, `decision-${decisions.length}`);
@@ -127,7 +131,7 @@ export async function blindPlay(c: Case, dir: string, config: ModelConfig, maxDe
     promptVersion: template.version, promptTemplateHash: template.templateHash,
     reasoningMistakes: decisions.filter(x => !x.result.ok).length,
     method: '公开界面驱动穷尽调查/追问，模型仅凭已获文本决定论证与出示；无作者答案、真相或搜索路径输入。',
-    limits: '调查由程序驱动，非完整自主玩家或人类试玩；最多12次推理判断、每题最多3次失败。',
+    limits: `调查由程序驱动，非完整自主玩家或人类试玩；最多${maxDecisions}次推理判断、每题最多${limits.maxMistakesPerInference}次失败；最多${limits.maxSteps}步，每地点最多${limits.maxActionsPerLocation}个行动。`,
   };
   await saveJson(join(dir, 'playtest.json'), result); return result;
 }

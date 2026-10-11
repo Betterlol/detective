@@ -1,5 +1,24 @@
 # Detective Case Lab
 
+## 流程配置
+
+根目录的 `detective.config.json` 控制生成流程和常用默认值。`workflow` 可以分别开关作者润色、基石 AI 审查、案件 AI 审查和盲玩验证；润色与基石审查适用于 Codex SDK 作者流程。结构/schema 校验、设计一致性和可解性搜索始终执行。每次生成会把生效配置和跳过的机制写入实验 `manifest.json`，各阶段也会留下跳过标记。
+
+配置文件还包含默认案件约束、修复预算上限、模型超时、可解性搜索上限，以及盲玩推理轮数和步数限制；自定义文件可以只写需要覆盖的字段。命令行的 `--constraints`、`--repairs`、`--design-repairs`、`--limit` 会覆盖对应默认值。可用 `--config <文件>` 指定另一份配置；`DETECTIVE_PROVIDER` 和 `DETECTIVE_TIMEOUT_MS` 环境变量覆盖文件中的模型接入方式和超时，API Key 仍只从 `OPENAI_API_KEY` 等环境变量读取。
+
+流程开关示例：
+
+```json
+{
+  "workflow": {
+    "polish": false,
+    "foundationReview": false,
+    "caseReview": true,
+    "blindPlaytest": false
+  }
+}
+```
+
 一个用于构建、验证和游玩侦探推理案件的 TypeScript 命令行实验项目。案件以 JSON 描述人物、地点、事实、证据、证词、行动和推理条件；工具负责检查案件逻辑，并可通过 AI 生成或修复案件。
 
 项目同时保留 V1 案件格式，并以 V2 的 **evidence-to-actor** 推理流程为主要发展方向：玩家从矛盾证词和证据出发，推导作案机制，再判断行为人及排除其他嫌疑人的依据。
@@ -158,6 +177,7 @@ test/      引擎、参数解析、盲测和 V2 行为测试
 
 主要模块：
 
+- `config.ts`：读取并校验 `detective.config.json`，合并默认配置。
 - `model.ts`：V1/V2 案件、状态、命令类型和 Schema。
 - `engine.ts`、`public.ts`、`player-view.ts`：状态转移、玩家命令和公开信息视图。
 - `validate.ts`、`validate-v2.ts`、`state-search.ts`：案件校验、版本规则和可达状态搜索。

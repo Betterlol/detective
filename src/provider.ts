@@ -5,11 +5,14 @@ import { hash, saveJson, saveText } from './io.js';
 import { agentOptions, createCodexClient, removeTempDirectory, runLoggedThread } from './sdk-run.js';
 import type { ModelReasoningEffort } from '@openai/codex-sdk';
 import { fixedModelConfig, modelPolicy } from './model-policy.js';
+import { defaultDetectiveConfig, type DetectiveConfig } from './config.js';
 
 export type ModelConfig = { provider: 'codex' | 'responses'; model: string; timeoutMs: number; reasoningEffort?: ModelReasoningEffort };
-export function modelConfig(): ModelConfig {
-  return { provider: process.env.DETECTIVE_PROVIDER === 'responses' ? 'responses' : 'codex',
-    ...modelPolicy, timeoutMs: Number(process.env.DETECTIVE_TIMEOUT_MS || 480_000) };
+export function modelConfig(settings: DetectiveConfig = defaultDetectiveConfig): ModelConfig {
+  const provider = process.env.DETECTIVE_PROVIDER;
+  const timeoutMs = process.env.DETECTIVE_TIMEOUT_MS;
+  return { provider: provider === 'responses' || provider === 'codex' ? provider : settings.model.provider,
+    ...modelPolicy, timeoutMs: timeoutMs ? Number(timeoutMs) : settings.model.timeoutMs };
 }
 export async function callModel(prompt: string, schema: unknown, dir: string, config = modelConfig()): Promise<string> {
   config = fixedModelConfig(config);

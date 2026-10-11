@@ -7,8 +7,9 @@ import { hash, saveJson } from './io.js';
 import { blindPlay } from './blind-player.js';
 import { changes } from './experiment-report.js';
 import { archivePlayerBinding } from './repair-history.js';
+import type { DetectiveConfig } from './config.js';
 
-export type GenerationAttempt = { index: number; kind: string; status: string; caseHash?: string; diagnostics: unknown };
+export type GenerationAttempt = { index: number; kind: string; status: string; caseHash?: string; diagnostics: unknown; skippedMechanisms?: string[] };
 export type RunAttemptInput = {
   outputDir: string;
   attempt: GenerationAttempt;
@@ -19,6 +20,7 @@ export type RunAttemptInput = {
   previous: unknown;
   feedback: unknown;
   config: ModelConfig;
+  settings: DetectiveConfig;
   resume: boolean;
 };
 export type RunAttemptResult = {
@@ -48,7 +50,7 @@ export async function runGenerationAttempt(input: RunAttemptInput): Promise<RunA
     await saveJson(join(attemptDir, 'case.json'), data);
     attempt.caseHash = hash(data);
 
-    const validation = audit(data);
+    const validation = audit(data, input.settings.validation.searchStateLimit);
     await saveJson(join(attemptDir, 'audit.json'), validation);
     feedback = validation;
     if (!validation.ok || !validation.search?.replay) {
@@ -58,19 +60,34 @@ export async function runGenerationAttempt(input: RunAttemptInput): Promise<RunA
     }
 
     const c = caseSchema.parse(data);
-    console.log(`[${input.outputDir}] ${validation.search.states} 状态，可通关；开始独立文本评审`);
-    const review = await reviewCase(c, validation.search.replay, join(attemptDir, 'review'), input.config);
-    feedback = { auditIssues: validation.issues, review };
-    if (!reviewAccepted(c, review)) {
-      attempt.status = 'review-failed';
-      attempt.diagnostics = review;
-      return { attempt, previous, feedback, raw, acceptedCaseHash };
+    console.log(`[${input.outputDir}] ${validation.search.states} 个状态搜索通过；按配置继续评审和试玩`);
+    let review: Awaited<ReturnType<typeof reviewCase>> | undefined;
+    if (input.settings.workflow.caseReview) {
+      review = await reviewCase(c, validation.search.replay, join(attemptDir, 'review'), input.config);
+      feedback = { auditIssues: validation.issues, review };
+      if (!reviewAccepted(c, review)) {
+        attempt.status = 'review-failed';
+        attempt.diagnostics = review;
+        return { attempt, previous, feedback, raw, acceptedCaseHash };
+      }
+    } else {
+      attempt.skippedMechanisms = [...(attempt.skippedMechanisms ?? []), 'caseReview'];
+      await saveJson(join(attemptDir, 'review', 'skipped.json'), { mechanism: 'caseReview', reason: 'disabled-by-config' });
+      feedback = { auditIssues: validation.issues, caseReview: 'skipped' };
     }
 
-    console.log(`[${input.outputDir}] 文本评审通过；开始盲玩家模型试玩`);
-    const playtest = await blindPlay(c, join(attemptDir, 'player'), input.config);
-    feedback = { review, playerFeedback: playtest };
-    if (!playtest.ok) {
+    let playtest: Awaited<ReturnType<typeof blindPlay>> | undefined;
+    if (input.settings.workflow.blindPlaytest) {
+      console.log(`[${input.outputDir}] 开始盲玩家模型试玩`);
+      playtest = await blindPlay(c, join(attemptDir, 'player'), input.config,
+        input.settings.blindPlay.maxDecisions, undefined, input.settings.blindPlay);
+      feedback = { review: review ?? 'skipped', playerFeedback: playtest };
+    } else {
+      attempt.skippedMechanisms = [...(attempt.skippedMechanisms ?? []), 'blindPlaytest'];
+      await saveJson(join(attemptDir, 'player', 'skipped.json'), { mechanism: 'blindPlaytest', reason: 'disabled-by-config' });
+      feedback = { review: review ?? 'skipped', blindPlaytest: 'skipped' };
+    }
+    if (playtest && !playtest.ok) {
       attempt.status = 'player-failed';
       attempt.diagnostics = { reason: '玩家仅凭实际文本未能通关', playtest };
       return { attempt, previous, feedback, raw, acceptedCaseHash };
@@ -80,11 +97,13 @@ export async function runGenerationAttempt(input: RunAttemptInput): Promise<RunA
     await saveJson(join(input.outputDir, 'audit.json'), validation);
     await saveJson(join(input.outputDir, 'replay.json'), validation.search.replay);
     await saveJson(join(input.outputDir, 'inference-evidence.json'), inferenceEvidence(c, validation.search.replay));
-    await saveJson(join(input.outputDir, 'review.json'), review);
-    await saveJson(join(input.outputDir, 'playtest.json'), playtest);
+    if (review) await saveJson(join(input.outputDir, 'review.json'), review);
+    else await saveJson(join(input.outputDir, 'review-skipped.json'), { mechanism: 'caseReview', reason: 'disabled-by-config' });
+    if (playtest) await saveJson(join(input.outputDir, 'playtest.json'), playtest);
+    else await saveJson(join(input.outputDir, 'playtest-skipped.json'), { mechanism: 'blindPlaytest', reason: 'disabled-by-config' });
     if (input.resume) await archivePlayerBinding(input.outputDir, attempt.index);
     attempt.status = 'accepted';
-    attempt.diagnostics = review.issues;
+    attempt.diagnostics = review?.issues ?? [];
     acceptedCaseHash = hash(c);
   } catch (e) {
     attempt.status = 'call-or-parse-failed';
