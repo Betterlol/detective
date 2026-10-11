@@ -12,8 +12,8 @@
   "workflow": {
     "polish": true,
     "foundationReview": true,
-    "caseReview": true,
-    "blindPlaytest": true
+    "caseReview": false,
+    "blindPlaytest": false
   },
   "validation": {
     "searchStateLimit": 100000
