@@ -110,4 +110,5 @@ export type Command =
   | { kind: 'present'; id: string; claimId: string; optionId: string; evidenceIds: string[] }
   | { kind: 'reason'; id: string; optionId: string; evidenceIds: string[] };
 export type Result = { ok: boolean; status: string; state: State; text: string[] };
+export const legacyJsonSchema = z.toJSONSchema(legacyCaseSchema);
 export const jsonSchema = z.toJSONSchema(caseV2Schema);

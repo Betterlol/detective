@@ -2,7 +2,7 @@ import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { join, dirname, relative, resolve } from 'node:path';
 import { access } from 'node:fs/promises';
-import { caseSchema, jsonSchema, type Command } from './model.js';
+import { caseSchema, jsonSchema, legacyJsonSchema, type Command } from './model.js';
 import { generate } from './generate.js';
 import { audit, replay } from './validate.js';
 import { initialState, opening, playerView, transition } from './engine.js';
@@ -12,7 +12,14 @@ import { resolvePlayerCommand } from './public.js';
 const [command, ...args] = process.argv.slice(2);
 const flag = (name: string, fallback?: string) => { const n = args.indexOf('--' + name); return n >= 0 ? args[n + 1] : fallback; };
 async function main() {
-  if (command === 'schema') { await saveJson(args[0] || 'schema/case-v2.schema.json', jsonSchema); return; }
+  if (command === 'schema') {
+    const version = flag('version', '2.0');
+    if (version !== '1.0' && version !== '2.0') throw new Error('schema 版本必须是 1.0 或 2.0');
+    const outputIndex = args.findIndex((arg, index) => !arg.startsWith('--') && args[index - 1] !== '--version');
+    const output = outputIndex >= 0 ? args[outputIndex] : version === '1.0' ? 'schema/case.schema.json' : 'schema/case-v2.schema.json';
+    await saveJson(output!, version === '1.0' ? legacyJsonSchema : jsonSchema);
+    return;
+  }
   if (command === 'blind') {
     const out = flag('out');
     if (!args[0] || !out) throw new Error('blind 案件.json --out 新试玩目录 [--bind]');
@@ -105,6 +112,6 @@ async function main() {
   if (command === 'acceptance') { const { acceptance } = await import('./acceptance.js'); const r = await acceptance(args[0] || 'experiments/v2', args.includes('--legacy')); if (!r.ok) process.exitCode = 1; return; }
   if (command === 'report') { const { experimentReport } = await import('./experiment-report.js'); const r = await experimentReport(args[0] || 'experiments/v2'); console.log(JSON.stringify({ calls: r.callCount, completed: r.completedCalls })); return; }
   if (command === 'mutate') { const { mutationChecks } = await import('./acceptance.js'); if (!args[0]) throw new Error('mutate 案件.json --out defects/目录'); const c = caseSchema.parse(await readJson(args[0])); await mutationChecks(c, flag('out', join('experiments', 'defects'))!); return; }
-  console.log('用法：npm run lab -- schema | generate | repair | validate | replay | play | blind | mutate | acceptance | report。详见 README。');
+  console.log('用法：npm run lab -- schema [--version 1.0|2.0] [输出文件] | generate | repair | validate | replay | play | blind | mutate | acceptance | report。详见 README。');
 }
 main().catch(e => { console.error(String(e)); process.exitCode = 1; });
