@@ -7,7 +7,7 @@ import { hash, saveJson, saveText } from './io.js';
 export type ModelConfig = { provider: 'codex' | 'responses'; model: string; timeoutMs: number };
 export function modelConfig(): ModelConfig {
   return { provider: process.env.DETECTIVE_PROVIDER === 'responses' ? 'responses' : 'codex',
-    model: process.env.DETECTIVE_MODEL || 'gpt-6.1-sol', timeoutMs: Number(process.env.DETECTIVE_TIMEOUT_MS || 480_000) };
+    model: process.env.DETECTIVE_MODEL || 'gpt-6-luna', timeoutMs: Number(process.env.DETECTIVE_TIMEOUT_MS || 480_000) };
 }
 async function codexCommand(): Promise<{ executable: string; prefix: string[] }> {
   const explicit = process.env.DETECTIVE_CODEX_PATH || process.env.CODEX_CLI_PATH;

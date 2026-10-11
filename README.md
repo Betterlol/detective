@@ -32,12 +32,12 @@ npm test
 
 ## 模型配置
 
-默认使用 Codex CLI，默认模型为 `gpt-6.1-sol`。可用环境变量调整配置：
+默认使用 Codex CLI，默认模型为 `gpt-6-luna`。可用环境变量调整配置：
 
 | 环境变量 | 用途 | 默认值 |
 | --- | --- | --- |
 | `DETECTIVE_PROVIDER` | 模型接入方式：`codex` 或 `responses` | `codex` |
-| `DETECTIVE_MODEL` | 使用的模型名称 | `gpt-6.1-sol` |
+| `DETECTIVE_MODEL` | 使用的模型名称 | `gpt-6-luna` |
 | `DETECTIVE_TIMEOUT_MS` | 单次模型请求超时（毫秒） | `480000` |
 | `DETECTIVE_CODEX_PATH` | Codex 可执行文件或内部 JavaScript 入口路径 | 自动查找 `codex` |
 | `CODEX_CLI_PATH` | `DETECTIVE_CODEX_PATH` 的兼容路径变量 | — |
