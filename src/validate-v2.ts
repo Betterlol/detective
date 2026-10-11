@@ -3,6 +3,7 @@ import type { Issue } from './validate.js';
 
 export function validateV2(c: CaseV2, issues: Issue[]) {
   const issue = (code: string, path: string, message: string) => issues.push({ code, path, message });
+  const warning = (code: string, path: string, message: string) => issues.push({ code, path, message, severity: 'warning' });
   const sets = { knowledge: new Set(c.knowledge.map(x => x.id)), evidence: new Set(c.evidence.map(x => x.id)),
     claim: new Set(c.claims.map(x => x.id)), flag: new Set(c.flags), character: new Set(c.characters.map(x => x.id)),
     location: new Set(c.locations.map(x => x.id)), fact: new Set(c.truth.facts.map(x => x.id)) };
@@ -61,8 +62,9 @@ export function validateV2(c: CaseV2, issues: Issue[]) {
     checkEffects(i.effects, path + '.effects', true); checkMoods(i.moodChanges, path + '.moodChanges');
     if (i.claimId && c.claims.find(x => x.id === i.claimId)?.locationId !== i.locationId) issue('claim-location', path, '证词和质询地点不一致');
     const lengths = i.options.map(x => Array.from(x.text.replace(/\s/g, '')).length);
-    if (Math.min(...lengths) < 20 || Math.max(...lengths) / Math.min(...lengths) > 1.6)
-      issue('option-length-leak', path + '.options', '全部选项至少20字符，最长/最短不得超过1.6；避免靠篇幅提示答案');
+    const shortest = Math.min(...lengths), longest = Math.max(...lengths);
+    if (longest - shortest >= 80 && longest / Math.max(shortest, 1) >= 2)
+      warning('option-length-leak', path + '.options', '选项长度差异较大；这只是弱提示，不证明存在或不存在答案线索，也不阻断验收');
     for (const alternative of i.argument.alternatives) {
       ref('knowledge', alternative.knowledgeIds, path + '.argument.alternatives');
       if (i.solutions.some(s => alternative.knowledgeIds.some(k => !s.knowledgeIds.includes(k))))

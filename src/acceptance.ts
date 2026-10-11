@@ -4,7 +4,7 @@ import { caseSchema, type Case } from './model.js';
 import { audit, inferenceEvidence, replay } from './validate.js';
 import { hash, readJson, saveJson } from './io.js';
 import { reviewAccepted, reviewSchema, reviewV2Schema } from './review.js';
-import { blindTranscriptValid, type BlindRecord } from './blind-player.js';
+import { blindTranscriptValid, playerPrompt, type BlindRecord } from './blind-player.js';
 
 type MutationReport = { ok: boolean; sourceCaseHash: string; results: { name: string; expectedCode: string; detected: boolean }[] };
 
@@ -88,7 +88,8 @@ export async function acceptance(root: string, legacy = false) {
         const call = join(playerDir, `decision-${n}`), decision = playtest.decisions[n]!;
         const prompt = await readFile(join(call, 'prompt.md'), 'utf8');
         const output = JSON.parse(await readFile(join(call, 'raw.json'), 'utf8'));
-        blindReproducible &&= prompt.includes(JSON.stringify(decision.input)) && hash(output) === hash(decision.output);
+        const promptMatchesPublicInput = decision.input.view.inferences.some(x => prompt === playerPrompt(decision.input, x.id));
+        blindReproducible &&= promptMatchesPublicInput && hash(output) === hash(decision.output);
       }
     }
     const passed = a.ok && freshReplay.ended && reviewAccepted(c, review) && provenance && reproducible && visiblePremises && blindReproducible && (legacy || c.version === '2.0');

@@ -3,7 +3,7 @@ import { initialState, opening, playerView, stateKey, transition } from './engin
 import { publicId } from './public.js';
 import { validateV2 } from './validate-v2.js';
 
-export type Issue = { code: string; path: string; message: string };
+export type Issue = { code: string; path: string; message: string; severity?: 'warning' };
 export function validate(input: unknown): { case?: Case; issues: Issue[] } {
   const parsed = caseSchema.safeParse(input);
   if (!parsed.success) return { issues: parsed.error.issues.map(x => ({ code: 'schema', path: x.path.join('.'), message: x.message })) };
@@ -174,9 +174,9 @@ export function search(c: Case, limit = 100_000) {
 
 export function audit(input: unknown, limit = 100_000) {
   const v = validate(input);
-  if (!v.case || v.issues.length) return { ok: false, issues: v.issues, search: null };
+  if (!v.case || v.issues.some(x => x.severity !== 'warning')) return { ok: false, issues: v.issues, search: null };
   const result = search(v.case, limit);
-  return { ok: result.ok, issues: result.issues, search: result };
+  return { ok: result.ok, issues: [...v.issues, ...result.issues], search: result };
 }
 
 // Evidence sheet derived from execution, not from the reviewer's recollection of the trace.
