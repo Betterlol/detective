@@ -93,6 +93,13 @@ export function validateV2(c: CaseV2, issues: Issue[]) {
       }
     }
   }
+  const alwaysLongest = c.inferences.length >= 3 && c.inferences.every(i => {
+    const lengths = i.options.map(o => Array.from(o.text.replace(/\s/g, '')).length), maximum = Math.max(...lengths);
+    return lengths.filter(n => n === maximum).length === 1 &&
+      i.solutions.every(s => lengths[i.options.findIndex(o => o.id === s.optionId)] === maximum);
+  });
+  if (alwaysLongest) warning('consistent-option-length-cue', 'inferences',
+    '每题正确项都是唯一最长，形成可重复的篇幅线索；请平衡自然论证并检查题目范围。此弱提示不代替语义审阅。');
   // Exact pre-acquisition copies of a conclusion are detectable; paraphrases require the independent text review.
   for (const i of c.inferences) {
     const conclusion = c.knowledge.find(k => k.id === i.conclusionKnowledgeId)?.text;

@@ -7,7 +7,11 @@ import type { reviewDesign } from './design-review.js';
 import type { BlindRecord } from './blind-player.js';
 import type { blindPlay } from './blind-player.js';
 
-export type AuthorHandle = Pick<AuthorSession, 'workspace' | 'state' | 'run'>;
+export type AuthorHandle = Pick<AuthorSession, 'workspace' | 'state'> & {
+  toolDrivenReview?: boolean;
+  run: (...args: Parameters<AuthorSession['run']>) => Promise<Omit<Awaited<ReturnType<AuthorSession['run']>>, 'reviewEvidence' | 'toolFailureKind'> &
+    { reviewEvidence?: Awaited<ReturnType<AuthorSession['run']>>['reviewEvidence']; toolFailureKind?: string }>;
+};
 
 export type GenerationServices = {
   config: () => ModelConfig;
@@ -25,6 +29,7 @@ export type SdkSource = {
 export type FoundationAttempt = {
   index: number; sourceDirectory: string; reviewDirectory: string; status: string;
   sourceHash?: string; designHash?: string; threadId?: string; diagnostics?: unknown; consumesBudget?: boolean; reviewSkipped?: boolean;
+  failureKind?: string;
 };
 
 export type SdkManifest = {

@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:tools": "node scripts/build-tools.mjs",
+    "pretest": "npm run build:tools",
     "check": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
     "lab": "tsx src/cli.ts",

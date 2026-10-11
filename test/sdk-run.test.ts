@@ -45,3 +45,17 @@ test('failed SDK turns retain partial events and the resumable thread ID', async
   assert.equal(transport.threadId, 'author-thread'); assert.equal(transport.exitCode, 1);
   assert.ok((await readFile(join(dir, 'events.jsonl'), 'utf8')).includes('turn.failed'));
 }));
+
+test('bounded reconnect notices are recorded while a recovered stream can finish', async () => withTemp(async dir => {
+  const notice: ThreadEvent = { type: 'error', message: 'Reconnecting... 2/5 (stream disconnected before completion: tls handshake eof)' };
+  const result = await runLoggedThread(thread([started, notice, answer, completed]), 'create', {}, dir, config, true);
+  assert.equal(result.finalResponse, '{"ok":true}');
+  const transport = JSON.parse(await readFile(join(dir, 'transport.json'), 'utf8'));
+  assert.deepEqual(transport.reconnectNotices, [notice.message]);
+  await runLoggedThread(thread([started, { type: 'error', message: 'Reconnecting... 2/5 (We’re currently experiencing high demand, which may cause temporary errors.)' }, answer, completed]),
+    'create', {}, join(dir, 'demand'), config, true);
+  await assert.rejects(runLoggedThread(thread([started, { type: 'error', message: 'Reconnecting... 1/100 (stream disconnected before completion: eof)' }]),
+    'create', {}, join(dir, 'unbounded'), config, true), /1\/100/);
+  await assert.rejects(runLoggedThread(thread([started, notice, { type: 'turn.failed', error: { message: 'connection exhausted' } }]),
+    'create', {}, join(dir, 'failed'), config, true), /connection exhausted/);
+}));
