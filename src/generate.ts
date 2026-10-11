@@ -9,33 +9,46 @@ import { randomUUID } from 'node:crypto';
 import { repairSource } from './repair-history.js';
 import { runGenerationAttempt, type GenerationAttempt } from './generation-attempt.js';
 import { playerPromptVersion } from './blind-player.js';
+import { generateWithSdk } from './sdk-generation.js';
+import { loadDetectiveConfig, type DetectiveConfig } from './config.js';
 
-export type GenerateInput = { theme: string; constraints: string; out: string; maxRepairs?: number; source?: unknown; injected?: boolean; resume?: boolean; feedback?: unknown };
+export type GenerateInput = { theme: string; constraints: string; out: string; maxRepairs?: number; maxDesignRepairs?: number;
+  source?: unknown; injected?: boolean; resume?: boolean; feedback?: unknown; settings?: DetectiveConfig };
 export async function generate(input: GenerateInput) {
+  const settings = input.settings ?? await loadDetectiveConfig();
+  input = { ...input, settings };
+  const config = modelConfig(settings);
+  if (config.provider === 'codex') return generateWithSdk(input);
   if (!input.resume) {
     try { await access(join(input.out, 'manifest.json')); throw new Error('输出目录已有实验记录，请换一个目录，避免覆盖历史'); }
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
   }
   await mkdir(input.out, { recursive: true });
   const template = await readFile(new URL('../prompts/create-v2.md', import.meta.url), 'utf8');
-  const config = modelConfig(); let maxRepairs = input.maxRepairs ?? 2;
-  if (!Number.isInteger(maxRepairs) || maxRepairs < 0 || maxRepairs > 5) throw new Error('maxRepairs 必须为0至5');
+  let maxRepairs = input.maxRepairs ?? settings.generation.maxRepairs;
+  if (!Number.isInteger(maxRepairs) || maxRepairs < 0 || maxRepairs > settings.generation.maxRepairBudget)
+    throw new Error(`maxRepairs 必须为0至${settings.generation.maxRepairBudget}`);
   let manifest = { version: 'experiment-2.0', contentVersion: '2.0', theme: input.theme, constraints: input.constraints,
     designPromptVersion, promptVersion: 'create-2.0', promptHash: hash(template), reviewPromptVersion, playerPromptVersion, config, maxRepairs,
+    settings, skippedMechanisms: [
+      ...(!settings.workflow.caseReview ? ['caseReview'] : []),
+      ...(!settings.workflow.blindPlaytest ? ['blindPlaytest'] : []),
+    ],
     kind: input.injected ? 'injected-defect-repair' : 'natural-generation',
     startedAt: new Date().toISOString(), completedAt: null as string | null, status: 'running',
     attempts: [] as GenerationAttempt[],
     acceptedAttempt: null as number | null, acceptedCaseHash: null as string | null };
   let design;
-  let previous = input.source, feedback: unknown = previous ? audit(previous) : null;
+  let previous = input.source, feedback: unknown = previous ? audit(previous, settings.validation.searchStateLimit) : null;
   let startAttempt = 0;
   if (input.resume) {
     manifest = await readJson(join(input.out, 'manifest.json')) as typeof manifest;
     if (manifest.version !== 'experiment-2.0' || manifest.status === 'running' || !input.feedback) throw new Error('续修需要已停止的v2实验及具体反馈');
     startAttempt = manifest.attempts.length; maxRepairs = input.maxRepairs ?? manifest.maxRepairs;
-    if (!Number.isInteger(maxRepairs) || maxRepairs < startAttempt || maxRepairs > 5) throw new Error('已无修复预算；指定不超过5且足够的repairs');
+    if (!Number.isInteger(maxRepairs) || maxRepairs < startAttempt || maxRepairs > settings.generation.maxRepairBudget)
+      throw new Error(`已无修复预算；指定不超过${settings.generation.maxRepairBudget}且足够的repairs`);
     previous = await repairSource(input.out, manifest.attempts);
-    feedback = { audit: previous ? audit(previous) : null, additionalReview: input.feedback,
+    feedback = { audit: previous ? audit(previous, settings.validation.searchStateLimit) : null, additionalReview: input.feedback,
       priorAttempts: manifest.attempts.map(x => ({ index: x.index, status: x.status, diagnostics: x.diagnostics })) };
     design = await readJson(join(input.out, 'design', 'design.json'));
     await saveJson(join(input.out, `resume-${startAttempt}-${randomUUID()}.json`), { at: new Date().toISOString(), priorManifest: manifest, feedback: input.feedback, config });
@@ -47,6 +60,10 @@ export async function generate(input: GenerateInput) {
     manifest.completedAt = null; manifest.maxRepairs = maxRepairs; manifest.config = config;
     manifest.designPromptVersion = designPromptVersion; manifest.reviewPromptVersion = reviewPromptVersion;
     manifest.playerPromptVersion = playerPromptVersion; manifest.promptHash = hash(template);
+    manifest.settings = settings; manifest.skippedMechanisms = [
+      ...(!settings.workflow.caseReview ? ['caseReview'] : []),
+      ...(!settings.workflow.blindPlaytest ? ['blindPlaytest'] : []),
+    ];
   } else {
     await saveJson(join(input.out, 'manifest.json'), manifest);
     console.log(`[${input.out}] 真相与身份论证设计`);
@@ -63,7 +80,8 @@ export async function generate(input: GenerateInput) {
     await saveJson(join(input.out, 'manifest.json'), manifest);
 
     const result = await runGenerationAttempt({ outputDir: input.out, attempt, theme: manifest.theme,
-      constraints: manifest.constraints, template, design, previous, feedback, config, resume: input.resume ?? false });
+      constraints: manifest.constraints, template, design, previous, feedback, config, settings,
+      resume: input.resume ?? false });
     previous = result.previous;
     feedback = result.feedback;
     if (result.acceptedCaseHash) {
