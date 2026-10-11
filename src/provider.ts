@@ -4,15 +4,15 @@ import { join } from 'node:path';
 import { hash, saveJson, saveText } from './io.js';
 import { agentOptions, createCodexClient, removeTempDirectory, runLoggedThread } from './sdk-run.js';
 import type { ModelReasoningEffort } from '@openai/codex-sdk';
+import { fixedModelConfig, modelPolicy } from './model-policy.js';
 
 export type ModelConfig = { provider: 'codex' | 'responses'; model: string; timeoutMs: number; reasoningEffort?: ModelReasoningEffort };
 export function modelConfig(): ModelConfig {
-  const effort = process.env.DETECTIVE_REASONING_EFFORT || 'medium';
-  if (!['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent'].includes(effort)) throw new Error('DETECTIVE_REASONING_EFFORT 无效');
   return { provider: process.env.DETECTIVE_PROVIDER === 'responses' ? 'responses' : 'codex',
-    model: process.env.DETECTIVE_MODEL || 'gpt-6-luna', timeoutMs: Number(process.env.DETECTIVE_TIMEOUT_MS || 480_000), reasoningEffort: effort as ModelReasoningEffort };
+    ...modelPolicy, timeoutMs: Number(process.env.DETECTIVE_TIMEOUT_MS || 480_000) };
 }
 export async function callModel(prompt: string, schema: unknown, dir: string, config = modelConfig()): Promise<string> {
+  config = fixedModelConfig(config);
   await saveText(join(dir, 'prompt.md'), prompt);
   await saveJson(join(dir, 'schema.json'), schema);
   await saveJson(join(dir, 'request.json'), { ...config, promptHash: hash(prompt), startedAt: new Date().toISOString(), toolUse: false });
@@ -22,7 +22,8 @@ export async function callModel(prompt: string, schema: unknown, dir: string, co
     const base = (process.env.OPENAI_BASE_URL || process.env.OPENAI_API_URL || 'https://api.openai.com/v1').replace(/\/$/, '').replace(/\/responses$/, '');
     const start = Date.now();
     const response = await fetch(base + '/responses', { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: config.model, input: prompt, store: false, text: { format: { type: 'json_schema', name: 'artifact', strict: true, schema } } }),
+      body: JSON.stringify({ model: config.model, reasoning: { effort: config.reasoningEffort }, input: prompt, store: false,
+        text: { format: { type: 'json_schema', name: 'artifact', strict: true, schema } } }),
       signal: AbortSignal.timeout(config.timeoutMs) });
     if (!response.ok) { await saveJson(join(dir, 'transport.json'), { status: response.status, elapsedMs: Date.now() - start }); throw new Error(`模型请求 HTTP ${response.status}`); }
     const body = await response.json() as { id: string; model: string; usage: unknown; output: { type: string; content?: { type: string; text?: string }[] }[] };

@@ -63,6 +63,7 @@ test('foundation review failure repairs the foundation before building, then cas
   assert.deepEqual(stages, ['design', 'design', 'build', 'polish', 'repair']);
   assert.equal(result.attempts[0]!.status, 'review-failed'); assert.equal(result.acceptedAttempt, 1);
   assert.equal(result.authorThreadId, 'author-fixture');
+  assert.equal(result.config.model, 'gpt-6-luna'); assert.equal(result.config.reasoningEffort, 'high');
 }));
 
 test('foundation budget exhaustion prevents executable case generation', async () => withTemp(async dir => {

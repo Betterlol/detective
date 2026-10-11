@@ -19,7 +19,7 @@ async function withTemp(run: (dir: string) => Promise<void>) {
   try { await run(dir); } finally { assert.equal(dirname(resolve(dir)), resolve(tmpdir())); assert.ok(basename(dir).startsWith('detective-author-test-')); await rm(dir, { recursive: true, force: true }); }
 }
 function fakeClient(useTool = true) {
-  const starts: ThreadOptions[] = [], resumes: string[] = []; let n = 0;
+  const starts: ThreadOptions[] = [], resumes: string[] = [], resumeOptions: ThreadOptions[] = []; let n = 0;
   function make(options: ThreadOptions): AgentThread {
     let id: string | null = null;
     return { get id() { return id; }, async runStreamed() {
@@ -34,8 +34,8 @@ function fakeClient(useTool = true) {
       })() };
     } };
   }
-  const client: AgentClient = { startThread(o) { starts.push(o); return make(o); }, resumeThread(id, o) { resumes.push(id); return make(o); } };
-  return { client, starts, resumes };
+  const client: AgentClient = { startThread(o) { starts.push(o); return make(o); }, resumeThread(id, o) { resumes.push(id); resumeOptions.push(o); return make(o); } };
+  return { client, starts, resumes, resumeOptions };
 }
 
 test('author edits files and validates them in one thread, then resumes the saved identity', async () => withTemp(async dir => {
@@ -44,8 +44,10 @@ test('author edits files and validates them in one thread, then resumes the save
   const built = await a.run('build', 'create case', join(dir, 'attempt-0/build'));
   assert.equal(design.threadId, built.threadId); assert.equal(fake.starts.length, 1);
   assert.equal(fake.starts[0]!.sandboxMode, 'workspace-write');
+  assert.equal(fake.starts[0]!.model, 'gpt-6-luna'); assert.equal(fake.starts[0]!.modelReasoningEffort, 'high');
   const restored = await AuthorSession.open(dir, config, true, fake.client);
   assert.deepEqual(fake.resumes, ['persistent-author']);
+  assert.equal(fake.resumeOptions[0]!.model, 'gpt-6-luna'); assert.equal(fake.resumeOptions[0]!.modelReasoningEffort, 'high');
   assert.equal(restored.workspace, a.workspace);
 }));
 

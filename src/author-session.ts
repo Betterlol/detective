@@ -8,6 +8,7 @@ import { agentOptions, createCodexClient, runLoggedThread, type AgentClient, typ
 import { readAuthorArtifact, toolMarker, type ToolMode, type ToolReport } from './author-tools.js';
 import { hash, readJson, saveJson } from './io.js';
 import type { ModelConfig } from './provider.js';
+import { fixedModelConfig } from './model-policy.js';
 
 export type AuthorStage = 'design' | 'build' | 'polish' | 'repair';
 const receiptSchema = z.object({ artifactPath: z.enum(['design.json', 'case.json']), summary: z.string().min(1), requestDesignRevision: z.boolean() }).strict();
@@ -40,6 +41,7 @@ export class AuthorSession {
   private constructor(readonly output: string, readonly workspace: string, private config: ModelConfig,
     private thread: AgentThread, readonly state: AuthorState) {}
   static async open(output: string, config: ModelConfig, resume = false, client: AgentClient = createCodexClient()) {
+    config = fixedModelConfig(config);
     if (config.provider !== 'codex') throw new Error('文件作者模式需要 Codex SDK；Responses 仅支持显式兼容生成');
     const root = resolve(output), workspace = join(root, 'author'); await mkdir(workspace, { recursive: true });
     const state: AuthorState = resume ? await readJson(join(root, 'author-session.json')) as AuthorState :

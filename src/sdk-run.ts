@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { hash, saveJson, saveText } from './io.js';
 import type { ModelConfig } from './provider.js';
+import { fixedModelConfig } from './model-policy.js';
 
 export interface AgentThread {
   readonly id: string | null;
@@ -37,9 +38,10 @@ export function createCodexClient(): AgentClient {
 }
 
 export function agentOptions(config: ModelConfig, workingDirectory: string, author: boolean): ThreadOptions {
+  config = fixedModelConfig(config);
   return { model: config.model, workingDirectory: resolve(workingDirectory), skipGitRepoCheck: true,
     sandboxMode: author ? 'workspace-write' : 'read-only', approvalPolicy: 'never',
-    networkAccessEnabled: false, webSearchMode: 'disabled', modelReasoningEffort: config.reasoningEffort ?? 'medium' };
+    networkAccessEnabled: false, webSearchMode: 'disabled', modelReasoningEffort: config.reasoningEffort };
 }
 
 export async function removeTempDirectory(dir: string, expectedParent: string, prefix: string) {
@@ -50,6 +52,7 @@ export async function removeTempDirectory(dir: string, expectedParent: string, p
 
 export async function runLoggedThread(thread: AgentThread, prompt: string, schema: unknown, dir: string,
   config: ModelConfig, allowTools: boolean, onThread?: (id: string) => void | Promise<void>): Promise<LoggedRun> {
+  config = fixedModelConfig(config);
   await saveText(join(dir, 'prompt.md'), prompt);
   await saveJson(join(dir, 'schema.json'), schema);
   await saveJson(join(dir, 'request.json'), { ...config, engine: 'codex-sdk', promptHash: hash(prompt),

@@ -18,6 +18,7 @@ import { renderPrompt } from './prompt-template.js';
 import type { GenerateInput } from './generate.js';
 import type { GenerationAttempt } from './generation-attempt.js';
 import { acquireGenerationLease } from './generation-lease.js';
+import { fixedModelConfig } from './model-policy.js';
 
 type AuthorHandle = Pick<AuthorSession, 'workspace' | 'state' | 'run'>;
 export type GenerationServices = {
@@ -55,7 +56,7 @@ export async function generateWithSdk(input: GenerateInput, overrides: Partial<G
 }
 
 async function generateSdkLocked(input: GenerateInput, overrides: Partial<GenerationServices>): Promise<SdkManifest> {
-  const services = { ...defaults, ...overrides }, config = services.config(), out = resolve(input.out);
+  const services = { ...defaults, ...overrides }, config = fixedModelConfig(services.config()), out = resolve(input.out);
   let maxRepairs = budget(input.maxRepairs ?? 2), maxDesignRepairs = budget(input.maxDesignRepairs ?? 2);
   if (config.provider !== 'codex') throw new Error('SDK 作者流程要求 Codex provider');
   if (!input.resume) {

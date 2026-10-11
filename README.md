@@ -32,14 +32,14 @@ npm test
 
 ## 模型配置
 
-默认使用 `@openai/codex-sdk`，默认模型为 `gpt-6-luna`，推理强度为 `medium`。可用环境变量调整配置：
+默认使用 `@openai/codex-sdk`。所有新模型请求固定为 **`gpt-6-luna` + `high`**，包含作者、基石评审、完整文本评审、公开试玩及恢复调用；Responses 兼容请求也遵守相同策略。配置集中在 `src/model-policy.ts`，不会自动切换模型。
+
+旧的 `DETECTIVE_MODEL` 和 `DETECTIVE_REASONING_EFFORT` 环境变量不再改变实际请求，调用方传入冲突配置也会归一化。每轮日志保存实际生效的配置。其余环境变量如下：
 
 | 环境变量 | 用途 | 默认值 |
 | --- | --- | --- |
 | `DETECTIVE_PROVIDER` | 模型接入方式：`codex` 或 `responses` | `codex` |
-| `DETECTIVE_MODEL` | 使用的模型名称 | `gpt-6-luna` |
 | `DETECTIVE_TIMEOUT_MS` | 单次模型请求超时（毫秒） | `480000` |
-| `DETECTIVE_REASONING_EFFORT` | Codex 推理强度，例如 `low`、`medium`、`high` | `medium` |
 | `DETECTIVE_CODEX_PATH` | Codex 原生可执行文件或内部 JavaScript 入口路径 | SDK 随依赖安装的运行时 |
 | `CODEX_CLI_PATH` | `DETECTIVE_CODEX_PATH` 的兼容路径变量 | — |
 | `OPENAI_API_KEY` | Responses API 凭据；使用 `responses` 时必填 | — |
@@ -51,7 +51,6 @@ npm test
 ```sh
 export DETECTIVE_PROVIDER=responses
 export OPENAI_API_KEY="你的 API Key"
-export DETECTIVE_MODEL="你的模型名称"
 ```
 
 PowerShell：
@@ -59,7 +58,6 @@ PowerShell：
 ```powershell
 $env:DETECTIVE_PROVIDER = 'responses'
 $env:OPENAI_API_KEY = '你的 API Key'
-$env:DETECTIVE_MODEL = '你的模型名称'
 ```
 
 ## 生成与验证案件
