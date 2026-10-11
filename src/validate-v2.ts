@@ -1,5 +1,5 @@
 import type { CaseV2 } from './model.js';
-import type { Issue } from './validate.js';
+import type { Issue } from './validation-types.js';
 
 export function validateV2(c: CaseV2, issues: Issue[]) {
   const issue = (code: string, path: string, message: string) => issues.push({ code, path, message });

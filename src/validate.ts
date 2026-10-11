@@ -2,8 +2,9 @@ import { caseSchema, type Case, type Command, type State } from './model.js';
 import { initialState, opening, playerView, stateKey, transition } from './engine.js';
 import { publicId } from './public.js';
 import { validateV2 } from './validate-v2.js';
+import type { Issue } from './validation-types.js';
 
-export type Issue = { code: string; path: string; message: string; severity?: 'warning' };
+export type { Issue } from './validation-types.js';
 export function validate(input: unknown): { case?: Case; issues: Issue[] } {
   const parsed = caseSchema.safeParse(input);
   if (!parsed.success) return { issues: parsed.error.issues.map(x => ({ code: 'schema', path: x.path.join('.'), message: x.message })) };
