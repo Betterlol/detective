@@ -1,10 +1,9 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { caseSchema, type Case } from './model.js';
-import { audit, inferenceEvidence, replay } from './validate.js';
+import type { Case } from './model.js';
+import { audit } from './validate.js';
 import { hash, readJson, saveJson } from './io.js';
-import { reviewAccepted, reviewSchema, reviewV2Schema } from './review.js';
-import { blindTranscriptValid, playerPrompt, type BlindRecord } from './blind-player.js';
+import { verifyAcceptedExperiment, type AcceptedCaseSummary, type AcceptanceManifest } from './experiment-verification.js';
 
 type MutationReport = { ok: boolean; sourceCaseHash: string; results: { name: string; expectedCode: string; detected: boolean }[] };
 
@@ -43,60 +42,20 @@ export async function mutationChecks(c: Case, dir: string) {
 }
 
 export async function acceptance(root: string, legacy = false) {
-  const cases = [], experiments = [], problems: string[] = [];
+  const cases: AcceptedCaseSummary[] = [], experiments = [], problems: string[] = [];
   let repaired = false;
   for (const entry of await readdir(root, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const dir = join(root, entry.name);
-    let manifest: { kind: string; theme: string; status: string; attempts: { index: number; status: string; kind: string }[]; acceptedAttempt: number | null; acceptedCaseHash: string | null };
+    let manifest: AcceptanceManifest;
     try { manifest = await readJson(join(dir, 'manifest.json')) as typeof manifest; }
     catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue; throw e; }
     experiments.push({ directory: entry.name, ...manifest });
     if (manifest.status !== 'accepted' || manifest.acceptedAttempt === null) continue;
-    const c = caseSchema.parse(await readJson(join(dir, 'case.json'))), a = audit(c);
-    const storedReplay = await readJson(join(dir, 'replay.json')) as { steps: { command: Parameters<typeof replay>[1][number] }[] };
-    const freshReplay = replay(c, storedReplay.steps.map(x => x.command));
-    const evidenceSheet = inferenceEvidence(c, freshReplay);
-    const verificationDir = c.version === '1.0' ? join(dir, 'compatibility-v2') : dir;
-    await saveJson(join(verificationDir, 'inference-evidence.json'), evidenceSheet);
-    const review = (c.version === '2.0' ? reviewV2Schema : reviewSchema).parse(await readJson(join(dir, 'review.json')));
-    const acceptedDir = join(dir, `attempt-${manifest.acceptedAttempt}`);
-    const original = JSON.parse(await readFile(join(acceptedDir, 'raw.json'), 'utf8'));
-    const originalReview = JSON.parse(await readFile(join(acceptedDir, 'review', 'raw.json'), 'utf8'));
-    const provenance = hash(c) === manifest.acceptedCaseHash && hash(original) === hash(c) && hash(review) === hash(originalReview);
-    const coreTrace = (x: ReturnType<typeof replay>) => ({ ...x, steps: x.steps.map(({ playerBefore, ...step }) => step) });
-    const reproducible = c.version === '1.0' ? hash(coreTrace(freshReplay)) === hash(coreTrace(storedReplay as ReturnType<typeof replay>)) : hash(freshReplay) === hash(storedReplay);
-    const publicViewMigrated = hash(freshReplay) !== hash(storedReplay);
-    const visiblePremises = evidenceSheet.every(x => x.premises.every(p => p.visibleBeforeReasoning) && x.prerequisites.every(p => p.presentBeforeReasoning));
-    let blindReproducible = legacy;
-    let blindDecisions = 0, blindMistakes = 0;
-    if (c.version === '2.0') {
-      let playerDir = join(acceptedDir, 'player');
-      try {
-        const binding = await readJson(join(dir, 'player-verification.json')) as { caseHash: string; directory: string };
-        if (binding.caseHash !== hash(c) || !/^[\w-]+$/.test(binding.directory)) throw new Error('重新试玩绑定来源无效');
-        playerDir = join(dir, binding.directory);
-        const source = await readJson(join(playerDir, 'provenance.json')) as { caseHash: string };
-        if (source.caseHash !== hash(c)) throw new Error('重新试玩案件哈希不匹配');
-      } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
-      const playtest = await readJson(join(playerDir, 'playtest.json')) as BlindRecord & { reasoningMistakes: number };
-      blindReproducible = blindTranscriptValid(c, playtest);
-      blindDecisions = playtest.decisions.length; blindMistakes = playtest.reasoningMistakes;
-      const originalPlaytest = await readJson(join(playerDir, 'playtest.json'));
-      if (playerDir === join(acceptedDir, 'player')) blindReproducible &&= hash(originalPlaytest) === hash(await readJson(join(dir, 'playtest.json')));
-      for (let n = 0; n < playtest.decisions.length; n++) {
-        const call = join(playerDir, `decision-${n}`), decision = playtest.decisions[n]!;
-        const prompt = await readFile(join(call, 'prompt.md'), 'utf8');
-        const output = JSON.parse(await readFile(join(call, 'raw.json'), 'utf8'));
-        const promptMatchesPublicInput = decision.input.view.inferences.some(x => prompt === playerPrompt(decision.input, x.id));
-        blindReproducible &&= promptMatchesPublicInput && hash(output) === hash(decision.output);
-      }
-    }
-    const passed = a.ok && freshReplay.ended && reviewAccepted(c, review) && provenance && reproducible && visiblePremises && blindReproducible && (legacy || c.version === '2.0');
-    await saveJson(join(verificationDir, 'verification.json'), { ok: passed, caseHash: hash(c), provenance, reproducible, visiblePremises, publicViewMigrated, blindReproducible, audit: a });
-    if (!passed) problems.push(`${entry.name} 重新验收失败`);
-    if (manifest.kind === 'natural-generation') cases.push({ directory: entry.name, version: c.version, theme: c.theme, title: c.title, ok: passed, states: a.search?.states, probes: a.search?.probes, exhaustive: a.search?.exhaustive, steps: freshReplay.steps.length, blindDecisions, blindMistakes, acceptedAttempt: manifest.acceptedAttempt, caseHash: hash(c) });
-    if (manifest.attempts.some(x => x.kind === 'repair' && x.status === 'accepted')) repaired = true;
+    const verification = await verifyAcceptedExperiment(dir, entry.name, manifest, legacy);
+    if (verification.problem) problems.push(verification.problem);
+    if (verification.caseSummary) cases.push(verification.caseSummary);
+    if (verification.repaired) repaired = true;
   }
   if (cases.filter(x => x.ok).length < 3) problems.push('少于3个真实生成且重新通过验收的主题案件');
   if (new Set(cases.filter(x => x.ok).map(x => x.theme)).size < 3) problems.push('主题数不足3；文字不同的实质差异另见质量报告');
