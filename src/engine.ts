@@ -1,25 +1,18 @@
-import type { Case, Command, Condition, Result, State } from './model.js';
-import { orderedOptions, publicId } from './public.js';
+import type { Case, Command, Result, State } from './model.js';
+import { activeClaim, satisfies } from './state-rules.js';
+// Compatibility exports; presentation and shared predicates are implemented separately.
+export { activeClaim, satisfies } from './state-rules.js';
+export { opening, playerView } from './player-view.js';
 
 const add = (a: string[], x: string) => { if (!a.includes(x)) a.push(x); };
-export const satisfies = (state: State, c: Condition): boolean =>
-  (['knowledge', 'evidence', 'claims', 'flags'] as const).every(k => c[k].every(x => state[k].includes(x)));
 export function initialState(c: Case): State {
   return { locationId: c.initial.locationId, knowledge: [...c.initial.knowledge], flags: [...c.initial.flags],
     evidence: [], claims: [], completed: [], solved: [], ended: false,
     ...(c.version === '2.0' ? { pressed: [], refuted: [], moods: Object.fromEntries(c.characters.map(x => [x.id, 'calm' as const])) } : {}),
   };
 }
-export function opening(c: Case): string[] {
-  return [c.prologue, ...c.initial.knowledge.map(x => c.knowledge.find(k => k.id === x)!.text),
-    c.locations.find(x => x.id === c.initial.locationId)!.description];
-}
 function grantKnowledge(c: Case, s: State, id: string, output: string[]) {
   if (!s.knowledge.includes(id)) { add(s.knowledge, id); output.push(c.knowledge.find(k => k.id === id)!.text); }
-}
-export function activeClaim(c: Case, s: State, id: string): boolean {
-  return s.claims.includes(id) && !(s.refuted || []).includes(id) &&
-    !(c.version === '2.0' && c.claims.some(x => s.claims.includes(x.id) && x.replacesClaimId === id));
 }
 function applyEffects(c: Case, s: State, effects: Case['actions'][number]['effects'], output: string[]) {
   for (const e of effects) {
@@ -103,27 +96,6 @@ export function transition(c: Case, state: State, command: Command): Result {
   return { ok: true, status: s.ended ? 'ending' : 'advanced', state: s, text: output };
 }
 
-// This whitelist is the only payload a player/renderer receives. No answer map or truth.
-export function playerView(c: Case, s: State) {
-  const handle = (kind: Parameters<typeof publicId>[1], id: string) => publicId(c, kind, id);
-  return {
-    title: c.title, ended: s.ended,
-    location: { ...c.locations.find(x => x.id === s.locationId)!, id: handle('locations', s.locationId) },
-    locations: c.locations.map(x => ({ id: handle('locations', x.id), name: x.name })),
-    characters: c.characters.map(x => ({ id: handle('characters', x.id), name: x.name, role: x.role, description: x.publicDescription, mood: s.moods?.[x.id] || 'calm' })),
-    knowledge: c.knowledge.filter(x => s.knowledge.includes(x.id)).map(x => ({ id: handle('knowledge', x.id), text: x.text })),
-    evidence: c.evidence.filter(x => s.evidence.includes(x.id)).map(({ id, name, description, source, reliability, limitations }) => ({ id: handle('evidence', id), name, description, source, reliability, limitations })),
-    claims: c.claims.filter(x => s.claims.includes(x.id)).map(({ id, characterId, text }) => ({ id: handle('claims', id), characterId: handle('characters', characterId), text, active: activeClaim(c, s, id), refuted: (s.refuted || []).includes(id) })),
-    presses: c.version === '2.0' ? c.claims.filter(x => x.press && x.locationId === s.locationId && activeClaim(c, s, x.id) && satisfies(s, x.press.requires))
-      .map(x => ({ id: handle('claims', x.id), text: x.text, completed: (s.pressed || []).includes(x.id) })) : [],
-    actions: c.actions.filter(a => a.locationId === s.locationId && satisfies(s, a.requires))
-      .map(a => ({ id: handle('actions', a.id), kind: a.kind, label: a.label, completed: s.completed.includes(a.id) })),
-    inferences: c.inferences.filter(i => i.locationId === s.locationId && satisfies(s, i.requires) && (!i.claimId || activeClaim(c, s, i.claimId)))
-      .map(i => ({ id: handle('inferences', i.id), label: i.label, question: i.question,
-        claimId: i.claimId ? handle('claims', i.claimId) : null,
-        options: orderedOptions(c, i).map(({ choice, text }) => ({ choice, text })), solved: s.solved.includes(i.id) })),
-  };
-}
 export const stateKey = (s: State): string => JSON.stringify({ ...s,
   knowledge: [...s.knowledge].sort(), evidence: [...s.evidence].sort(), claims: [...s.claims].sort(),
   flags: [...s.flags].sort(), completed: [...s.completed].sort(), solved: [...s.solved].sort(),
