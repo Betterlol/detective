@@ -6,7 +6,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { generateWithSdk, type GenerationServices } from '../src/sdk-generation.js';
 import { fixtureDesign } from './designfixture.js';
 import { fixtureV2 } from './v2fixture.js';
-import { hash, saveJson } from '../src/io.js';
+import { hash, readJson, saveJson } from '../src/io.js';
+import { ModelCallError } from '../src/sdk-run.js';
 import { checkAuthorWorkspace } from '../src/author-tools.js';
 import type { AuthorStage } from '../src/author-session.js';
 import type { ReviewV2 } from '../src/review.js';
@@ -112,4 +113,72 @@ test('a failed author setup stops the experiment instead of leaving a running ma
   const base = services(dir); base.deps.openAuthor = async () => { throw new Error('missing runtime'); };
   const result = await generateWithSdk({ theme: 'test', constraints: '', out: dir }, base.deps);
   assert.equal(result.status, 'failed'); assert.ok(result.completedAt); assert.equal(result.attempts.length, 0);
+}));
+
+test('a rejected requested foundation revision blocks content and must be accepted on resume', async () => withTemp(async dir => {
+  const base = services(dir), open = base.deps.openAuthor, review = base.deps.reviewDesign;
+  let reviews = 0;
+  base.deps.reviewDesign = async (...args) => {
+    const result = await review(...args);
+    if (reviews++ > 0) { result.verdict = 'revise'; result.identity.verdict = 'revise'; }
+    return result;
+  };
+  base.deps.openAuthor = async (...args) => {
+    const a = await open(...args), run = a.run.bind(a);
+    a.run = async (stage, prompt, dir) => {
+      const value = await run(stage, prompt, dir);
+      if (stage !== 'build') return value;
+      const design = fixtureDesign(); design.risks.push('requested revision');
+      await saveJson(join(a.workspace, 'design.json'), design);
+      return { ...value, artifact: design, artifactHash: hash(design), requestDesignRevision: true,
+        receipt: { artifactPath: 'design.json', summary: 'revision', requestDesignRevision: true } };
+    }; return a;
+  };
+  const failed = await generateWithSdk({ theme: 'test', constraints: '', out: dir, maxDesignRepairs: 1, maxRepairs: 2 }, base.deps);
+  assert.equal(failed.status, 'failed'); assert.equal(failed.acceptedDesignHash, null);
+  assert.deepEqual(base.stages, ['design', 'build']);
+  const next = services(dir);
+  const resumed = await generateWithSdk({ theme: '', constraints: '', out: dir, resume: true, feedback: { message: 'repair proposed foundation' }, maxDesignRepairs: 2 }, next.deps);
+  assert.equal(resumed.status, 'accepted'); assert.equal(next.stages[0], 'design');
+}));
+
+for (const failingStage of ['design', 'build'] as const) test(`six ${failingStage} transport failures preserve records without consuming defect repairs`, async () => withTemp(async dir => {
+  for (let n = 0; n < 6; n++) {
+    const base = services(dir), open = base.deps.openAuthor;
+    base.deps.openAuthor = async (...args) => {
+      const a = await open(...args), run = a.run.bind(a);
+      a.run = async (stage, ...args) => {
+        if (stage === failingStage) throw new ModelCallError('temporary network failure');
+        return run(stage, ...args);
+      }; return a;
+    };
+    const failed = await generateWithSdk({ theme: 'test', constraints: '', out: dir, resume: n > 0,
+      feedback: n > 0 ? { message: 'retry transport' } : undefined, maxDesignRepairs: 0, maxRepairs: 0 }, base.deps);
+    assert.equal(failed.status, 'failed');
+  }
+  const next = services(dir);
+  const result = await generateWithSdk({ theme: '', constraints: '', out: dir, resume: true,
+    feedback: { message: 'transport restored' }, maxRepairs: 0, maxDesignRepairs: 0 }, next.deps);
+  assert.equal(result.status, 'accepted');
+  assert.equal(failingStage === 'design' ? result.foundationAttempts.length : result.attempts.length, 7);
+}));
+
+test('an abandoned running experiment resumes its saved author thread', async () => withTemp(async dir => {
+  const base = services(dir, 10);
+  await generateWithSdk({ theme: 'test', constraints: '', out: dir, maxDesignRepairs: 0 }, base.deps);
+  const prior = await readJson(join(dir, 'manifest.json')) as { status: string; foundationAttempts: { status: string }[] };
+  prior.status = 'running'; prior.foundationAttempts[0]!.status = 'running';
+  await saveJson(join(dir, 'manifest.json'), prior);
+  await saveJson(join(dir, 'generation-lock.json'), { pid: 2147483647, token: 'abandoned' });
+  const next = services(dir);
+  const result = await generateWithSdk({ theme: '', constraints: '', out: dir, resume: true, feedback: { message: 'recover interruption' }, maxDesignRepairs: 0 }, next.deps);
+  assert.equal(result.status, 'accepted'); assert.deepEqual(next.resumed, [true]);
+  assert.equal(result.foundationAttempts[0]!.status, 'interrupted');
+}));
+
+test('a live experiment lease prevents a second author from starting', async () => withTemp(async dir => {
+  await saveJson(join(dir, 'generation-lock.json'), { pid: process.pid, token: 'live-owner' });
+  const base = services(dir);
+  await assert.rejects(generateWithSdk({ theme: 'test', constraints: '', out: dir }, base.deps), /仍在运行/);
+  assert.equal(base.resumed.length, 0);
 }));

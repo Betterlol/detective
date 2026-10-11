@@ -40,7 +40,7 @@ npm test
 | `DETECTIVE_MODEL` | 使用的模型名称 | `gpt-6-luna` |
 | `DETECTIVE_TIMEOUT_MS` | 单次模型请求超时（毫秒） | `480000` |
 | `DETECTIVE_REASONING_EFFORT` | Codex 推理强度，例如 `low`、`medium`、`high` | `medium` |
-| `DETECTIVE_CODEX_PATH` | Codex 可执行文件或内部 JavaScript 入口路径 | 自动查找 `codex` |
+| `DETECTIVE_CODEX_PATH` | Codex 原生可执行文件或内部 JavaScript 入口路径 | SDK 随依赖安装的运行时 |
 | `CODEX_CLI_PATH` | `DETECTIVE_CODEX_PATH` 的兼容路径变量 | — |
 | `OPENAI_API_KEY` | Responses API 凭据；使用 `responses` 时必填 | — |
 | `OPENAI_BASE_URL` | Responses API 服务地址 | `https://api.openai.com/v1` |
@@ -66,9 +66,11 @@ $env:DETECTIVE_MODEL = '你的模型名称'
 
 生成命令需要模型服务，并要求输出目录尚未包含已有实验记录。默认流程为 **基石设计与独立验收 → 可执行案件构建 → 文案完善 → 独立文本评审 → 公开视角推理试玩**。作者在同一持久会话内编辑 `author/design.json` 和 `author/case.json`，实际调用可信校验与回放工具；后续修复继续使用该会话。基石结构或独立逻辑评审没有通过时，不生成完整案件。
 
-每次实验保存 `manifest.json`、`author-session.json`、阶段文件快照、工具执行事件、提示词与最终工作回执。作者回执不再包含整份案件。应用仍独立检查实际文件，并核对人物、实施者、候选人及基石事实与成品的一致性；评审与试玩分别使用新的只读会话，拒绝发生工具调用的结果。
+每次实验保存 `manifest.json`、`author-session.json`、阶段文件快照、工具执行事件、提示词与最终工作回执。作者回执不再包含整份案件。应用仍独立检查实际文件，并核对人物、实施者、候选人及基石事实与成品的一致性。结案的 `resolution.actFactId` 必须指向原文等于已验收 `coreAct` 的事实；评审与试玩分别使用新的只读会话，拒绝发生工具调用的结果。
 
-`--repairs` 是完整案件的修复预算；`--design-repairs` 是基石的修复预算，均默认 2、最多 5。作者可以明确申请修订基石，但修订后必须再次独立验收。停止后使用 `repair` 恢复保存的作者会话；旧实验没有作者会话时，会保存迁移来源并创建新会话。Responses 模式保留原有结构化生成，不能提供 SDK 文件编辑能力。
+`--repairs` 是完整案件的修复预算；`--design-repairs` 是基石的修复预算，均默认 2、最多 5，表示首次候选之外的修复次数。运行记录保留全部失败；未完成的作者调用、网络失败和进程中断不占用内容缺陷预算，也不自动无限重试。作者可以明确申请修订基石，但修订未验收前会停止内容生成，续修也先验收该基石。
+
+停止后使用 `repair` 和明确反馈恢复保存的作者会话。进程意外退出留下的 `running` 状态可恢复；生成锁会阻止两个活跃进程并发操作同一作者。旧实验没有作者会话时，会保存迁移来源并创建新会话。Responses 模式保留原有结构化生成，不能提供 SDK 文件编辑能力。
 
 ```sh
 npm run lab -- generate \

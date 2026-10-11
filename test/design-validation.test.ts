@@ -30,3 +30,11 @@ test('compiled cases must preserve accepted characters, suspects, actor and foun
   const omitted = structuredClone(c); omitted.resolution.suspectIds = ['clerk'];
   assert.ok(designConsistency(d, omitted).some(i => i.code === 'design-suspects'));
 });
+
+test('retaining foundation facts cannot substitute an unrelated act as the resolution', () => {
+  const c = fixtureV2(), d = fixtureDesign(c);
+  d.coreAct = c.truth.facts.find(x => x.id === c.resolution.actFactId)!.text;
+  c.truth.facts.push({ id: 'other_act', text: '管理员实施了另一项无关行为。' });
+  c.resolution.actFactId = 'other_act';
+  assert.ok(designConsistency(d, c).some(x => x.code === 'design-core-act'));
+});

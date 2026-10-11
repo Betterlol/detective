@@ -5,7 +5,7 @@ import { fixtureV2 } from './v2fixture.js';
 export function fixtureDesign(c: CaseV2 = fixtureV2()) {
   const actor = c.characters.find(x => x.id === c.truth.culpritId)!;
   return designSchema.parse({
-    title: c.title, theme: c.theme, coreAct: c.truth.summary,
+    title: c.title, theme: c.theme, coreAct: c.truth.facts.find(x => x.id === c.resolution.actFactId)!.text,
     actor: { id: actor.id, name: actor.name, motive: actor.privateMotive },
     suspects: c.characters.map(x => ({ id: x.id, name: x.name, role: x.role, apparentSuspicion: '待查疑点', exclusionMaterial: '独立影像核对' })),
     truthFacts: c.truth.facts,

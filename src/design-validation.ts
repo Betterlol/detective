@@ -35,5 +35,7 @@ export function designConsistency(d: Design, c: CaseV2): Issue[] {
     issue('design-suspects', 'resolution.suspectIds', '候选人集合与已验收设计不一致');
   for (const fact of d.truthFacts) if (c.truth.facts.find(x => x.id === fact.id)?.text !== fact.text)
     issue('design-fact', `truth.facts.${fact.id}`, '已验收的基石事实必须保留 ID 和原文；需修改时先修订设计');
+  if (c.truth.facts.find(x => x.id === c.resolution.actFactId)?.text !== d.coreAct)
+    issue('design-core-act', 'resolution.actFactId', '结案行为事实的原文必须等于已验收的 coreAct；可新增对应事实，改变核心行为须先重新验收设计');
   return issues;
 }
