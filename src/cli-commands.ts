@@ -50,7 +50,8 @@ async function runGenerate(context: CommandContext) {
   if (!theme || !out) throw new Error('generate --theme "主题" --out experiments/新目录 [--constraints "约束"] [--repairs 2]');
   const source = flag('source');
   const manifest = await generate({ theme, out, constraints: flag('constraints', '微型完整中文案件；至少一处公平的关键推理')!,
-    maxRepairs: Number(flag('repairs', '2')), source: source ? await readJson(source) : undefined, injected: args.hasFlag('injected') });
+    maxRepairs: Number(flag('repairs', '2')), maxDesignRepairs: Number(flag('design-repairs', '2')),
+    source: source ? await readJson(source) : undefined, injected: args.hasFlag('injected') });
   console.log(JSON.stringify(manifest, null, 2)); if (manifest.status !== 'accepted') process.exitCode = 1; return;
 }
 
@@ -59,7 +60,8 @@ async function runRepair(context: CommandContext) {
   const feedback = flag('feedback');
   if (!args.positionals[0] || !feedback) throw new Error('repair 实验目录 --feedback 反馈.json [--repairs 3]');
   const result = await generate({ theme: '', constraints: '', out: args.positionals[0], resume: true,
-    feedback: await readJson(feedback), maxRepairs: flag('repairs') ? Number(flag('repairs')) : undefined });
+    feedback: await readJson(feedback), maxRepairs: flag('repairs') ? Number(flag('repairs')) : undefined,
+    maxDesignRepairs: flag('design-repairs') ? Number(flag('design-repairs')) : undefined });
   console.log(JSON.stringify({ status: result.status, acceptedAttempt: result.acceptedAttempt }));
   if (result.status !== 'accepted') process.exitCode = 1; return;
 }

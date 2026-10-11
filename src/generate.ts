@@ -9,9 +9,11 @@ import { randomUUID } from 'node:crypto';
 import { repairSource } from './repair-history.js';
 import { runGenerationAttempt, type GenerationAttempt } from './generation-attempt.js';
 import { playerPromptVersion } from './blind-player.js';
+import { generateWithSdk } from './sdk-generation.js';
 
-export type GenerateInput = { theme: string; constraints: string; out: string; maxRepairs?: number; source?: unknown; injected?: boolean; resume?: boolean; feedback?: unknown };
+export type GenerateInput = { theme: string; constraints: string; out: string; maxRepairs?: number; maxDesignRepairs?: number; source?: unknown; injected?: boolean; resume?: boolean; feedback?: unknown };
 export async function generate(input: GenerateInput) {
+  if (modelConfig().provider === 'codex') return generateWithSdk(input);
   if (!input.resume) {
     try { await access(join(input.out, 'manifest.json')); throw new Error('输出目录已有实验记录，请换一个目录，避免覆盖历史'); }
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }

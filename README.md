@@ -17,7 +17,7 @@
 - Node.js 22 或更高版本
 - npm
 - 使用模型功能时，二选一：
-  - 默认方式：本机已安装并登录 Codex CLI。
+  - 默认方式：登录 Codex；项目通过官方 Codex SDK 调用随依赖安装的 CLI 运行时。
   - Responses API：准备一个可用的 API Key 和支持的模型。
 
 ## 安装与本地检查
@@ -32,13 +32,14 @@ npm test
 
 ## 模型配置
 
-默认使用 Codex CLI，默认模型为 `gpt-6-luna`。可用环境变量调整配置：
+默认使用 `@openai/codex-sdk`，默认模型为 `gpt-6-luna`，推理强度为 `medium`。可用环境变量调整配置：
 
 | 环境变量 | 用途 | 默认值 |
 | --- | --- | --- |
 | `DETECTIVE_PROVIDER` | 模型接入方式：`codex` 或 `responses` | `codex` |
 | `DETECTIVE_MODEL` | 使用的模型名称 | `gpt-6-luna` |
 | `DETECTIVE_TIMEOUT_MS` | 单次模型请求超时（毫秒） | `480000` |
+| `DETECTIVE_REASONING_EFFORT` | Codex 推理强度，例如 `low`、`medium`、`high` | `medium` |
 | `DETECTIVE_CODEX_PATH` | Codex 可执行文件或内部 JavaScript 入口路径 | 自动查找 `codex` |
 | `CODEX_CLI_PATH` | `DETECTIVE_CODEX_PATH` 的兼容路径变量 | — |
 | `OPENAI_API_KEY` | Responses API 凭据；使用 `responses` 时必填 | — |
@@ -63,14 +64,18 @@ $env:DETECTIVE_MODEL = '你的模型名称'
 
 ## 生成与验证案件
 
-生成命令需要模型服务，并要求输出目录尚未包含已有实验记录。每次实验会写入 `manifest.json`、案件文件和按轮次保存的设计、提示词、模型响应、复核与验证结果。请为不同实验选择不同目录，避免覆盖历史。
+生成命令需要模型服务，并要求输出目录尚未包含已有实验记录。默认流程为 **基石设计与独立验收 → 可执行案件构建 → 文案完善 → 独立文本评审 → 公开视角推理试玩**。作者在同一持久会话内编辑 `author/design.json` 和 `author/case.json`，实际调用可信校验与回放工具；后续修复继续使用该会话。基石结构或独立逻辑评审没有通过时，不生成完整案件。
+
+每次实验保存 `manifest.json`、`author-session.json`、阶段文件快照、工具执行事件、提示词与最终工作回执。作者回执不再包含整份案件。应用仍独立检查实际文件，并核对人物、实施者、候选人及基石事实与成品的一致性；评审与试玩分别使用新的只读会话，拒绝发生工具调用的结果。
+
+`--repairs` 是完整案件的修复预算；`--design-repairs` 是基石的修复预算，均默认 2、最多 5。作者可以明确申请修订基石，但修订后必须再次独立验收。停止后使用 `repair` 恢复保存的作者会话；旧实验没有作者会话时，会保存迁移来源并创建新会话。Responses 模式保留原有结构化生成，不能提供 SDK 文件编辑能力。
 
 ```sh
 npm run lab -- generate \
   --theme "海边旅馆发生的一起密室盗窃" \
   --constraints "所有关键线索都能通过调查获得，身份推理必须引用证据" \
   --out experiments/my-first-case \
-  --repairs 2
+  --repairs 2 --design-repairs 2
 ```
 
 通过验证后，实验根目录下的 `case.json` 是可游玩的案件。可以继续校验或开始游玩：
@@ -101,8 +106,8 @@ npm run lab -- play experiments/my-first-case/case.json --save my-play.json
 | 命令 | 用途 |
 | --- | --- |
 | `schema [文件] [--version 1.0\|2.0]` | 生成 JSON Schema；默认版本为 `2.0`，默认输出到 `schema/` 下对应文件 |
-| `generate --theme 文本 --out 目录 [--constraints 文本] [--repairs 数量] [--source 文件] [--injected]` | 设计并生成案件；可选提供来源案件或缺陷注入 |
-| `repair <实验目录> --feedback 文件 [--repairs 数量]` | 根据 JSON 反馈继续修复已停止的 V2 实验 |
+| `generate --theme 文本 --out 目录 [--constraints 文本] [--repairs 数量] [--design-repairs 数量] [--source 文件] [--injected]` | 分阶段设计、验收和生成案件；可选提供来源案件或缺陷注入 |
+| `repair <实验目录> --feedback 文件 [--repairs 数量] [--design-repairs 数量]` | 根据 JSON 反馈恢复作者会话，继续修复已停止的实验 |
 | `validate <案件文件> [--out 文件] [--limit 数量]` | 校验案件并报告问题、状态搜索和回放结果 |
 | `replay <案件文件> [轨迹文件] [--out 文件]` | 回放给定轨迹；未提供轨迹时尝试使用验证得到的轨迹 |
 | `play <案件文件> [--save 文件]` | 在终端交互游玩 |
@@ -128,6 +133,8 @@ npm run lab -- mutate experiments/my-first-case/case.json --out experiments/my-c
 ```
 
 `npm run verify` 和 `npm run verify:legacy` 是针对本地实验目录的便捷入口，分别读取 `experiments/v2` 和 `experiments`。验收及报告命令会在相应目录写入结果文件；在运行前确认目录内容和输出位置符合预期。
+
+新试玩保存版本化提示模板快照和哈希，验收按实际使用的模板核对当时的公开输入，不受后续模板修改影响。已知的两种 `player-2.0` 历史模板精确兼容。SDK 实验还核查基石评审、文件来源、同一作者会话及真实工具调用；旧实验继续按原始完整 JSON 的来源规则检查。
 
 ## V1 与 V2
 
@@ -155,7 +162,9 @@ test/      引擎、参数解析、盲测和 V2 行为测试
 - `engine.ts`、`public.ts`、`player-view.ts`：状态转移、玩家命令和公开信息视图。
 - `validate.ts`、`validate-v2.ts`、`state-search.ts`：案件校验、版本规则和可达状态搜索。
 - `generate.ts`、`generation-attempt.ts`、`review.ts`：生成、修复和复核流程。
-- `provider.ts`：Codex CLI 与 Responses API 模型接入。
+- `provider.ts`、`sdk-run.ts`：Codex SDK 与 Responses API 接入、流式日志和隔离请求。
+- `sdk-generation.ts`、`author-session.ts`、`author-tools.ts`：分阶段作者会话、JSON 文件编辑、可信校验与回放。
+- `design-validation.ts`、`design-review.ts`、`sdk-provenance.ts`：基石验收、成品一致性与 SDK 实验来源。
 - `cli-args.ts`、`cli-commands.ts`：CLI 参数解析和命令处理。
 
 ## 开发命令

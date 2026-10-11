@@ -10,7 +10,7 @@ export function parseCliArguments(argv: string[]): ParsedCliArguments {
   const positionals: string[] = [];
   const options = new Map<string, string>();
   const flags = new Set<string>();
-  const valueOptions = new Set(['version', 'out', 'theme', 'source', 'constraints', 'repairs', 'feedback', 'limit', 'save']);
+  const valueOptions = new Set(['version', 'out', 'theme', 'source', 'constraints', 'repairs', 'design-repairs', 'feedback', 'limit', 'save']);
   const booleanOptions = new Set(['bind', 'injected', 'legacy']);
 
   for (let i = 0; i < tokens.length; i++) {

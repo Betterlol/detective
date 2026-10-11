@@ -3,11 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hash, saveJson, saveText } from './io.js';
 import { agentOptions, createCodexClient, removeTempDirectory, runLoggedThread } from './sdk-run.js';
+import type { ModelReasoningEffort } from '@openai/codex-sdk';
 
-export type ModelConfig = { provider: 'codex' | 'responses'; model: string; timeoutMs: number };
+export type ModelConfig = { provider: 'codex' | 'responses'; model: string; timeoutMs: number; reasoningEffort?: ModelReasoningEffort };
 export function modelConfig(): ModelConfig {
+  const effort = process.env.DETECTIVE_REASONING_EFFORT || 'medium';
+  if (!['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent'].includes(effort)) throw new Error('DETECTIVE_REASONING_EFFORT 无效');
   return { provider: process.env.DETECTIVE_PROVIDER === 'responses' ? 'responses' : 'codex',
-    model: process.env.DETECTIVE_MODEL || 'gpt-6-luna', timeoutMs: Number(process.env.DETECTIVE_TIMEOUT_MS || 480_000) };
+    model: process.env.DETECTIVE_MODEL || 'gpt-6-luna', timeoutMs: Number(process.env.DETECTIVE_TIMEOUT_MS || 480_000), reasoningEffort: effort as ModelReasoningEffort };
 }
 export async function callModel(prompt: string, schema: unknown, dir: string, config = modelConfig()): Promise<string> {
   await saveText(join(dir, 'prompt.md'), prompt);

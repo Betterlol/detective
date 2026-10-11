@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { ThreadEvent, ThreadOptions } from '@openai/codex-sdk';
 import { AuthorSession, toolCommand } from '../src/author-session.js';
 import { checkAuthorWorkspace } from '../src/author-tools.js';
@@ -58,4 +60,13 @@ test('trusted case tool detects changes to the accepted foundation and returns r
   assert.equal((await checkAuthorWorkspace(dir, 'replay')).replay?.ended, true);
   const changed = fixtureV2(); changed.truth.facts[0]!.text = '改写事实'; await saveJson(join(dir, 'case.json'), changed);
   assert.equal((await checkAuthorWorkspace(dir, 'case')).ok, false);
+}));
+
+test('the advertised validation command runs from a content directory outside the project', async () => withTemp(async dir => {
+  await saveJson(join(dir, 'design.json'), fixtureDesign());
+  const command = toolCommand(dir, 'design');
+  const args = process.platform === 'win32' ? ['-NoProfile', '-NonInteractive', '-Command', command] : ['-c', command];
+  const { stdout } = await promisify(execFile)(process.platform === 'win32' ? 'powershell.exe' : 'sh', args,
+    { cwd: dir, windowsHide: true, timeout: 30000 });
+  const report = JSON.parse(stdout.trim()); assert.equal(report.ok, true); assert.equal(report.mode, 'design');
 }));

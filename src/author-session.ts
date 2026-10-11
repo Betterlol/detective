@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { ThreadItem } from '@openai/codex-sdk';
 import { agentOptions, createCodexClient, runLoggedThread, type AgentClient, type AgentThread } from './sdk-run.js';
 import { readAuthorArtifact, toolMarker, type ToolMode, type ToolReport } from './author-tools.js';
@@ -12,16 +12,16 @@ import type { ModelConfig } from './provider.js';
 export type AuthorStage = 'design' | 'build' | 'polish' | 'repair';
 const receiptSchema = z.object({ artifactPath: z.enum(['design.json', 'case.json']), summary: z.string().min(1), requestDesignRevision: z.boolean() }).strict();
 export const trustedToolPath = fileURLToPath(new URL('./author-tools.ts', import.meta.url));
-const loader = createRequire(import.meta.url).resolve('tsx');
+const loader = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
 function quote(value: string) { return process.platform === 'win32' ? `'${value.replace(/'/g, "''")}'` : `'${value.replace(/'/g, "'\\''")}'`; }
 export function toolCommand(workspace: string, mode: ToolMode) {
   return `${process.platform === 'win32' ? '& ' : ''}${quote(process.execPath)} --import ${quote(loader)} ${quote(trustedToolPath)} ${quote(resolve(workspace))} ${mode}`;
 }
 export function trustedValidation(items: ThreadItem[], workspace: string, mode: ToolMode, artifactHash: string): ToolReport | null {
-  const normalize = (text: string) => text.replace(/\\/g, '/').toLowerCase();
+  const normalize = (text: string) => text.replace(/\\+/g, '/').replace(/\/+/g, '/').toLowerCase();
   for (const item of items) {
     if (item.type !== 'command_execution' || item.exit_code !== 0 || item.status !== 'completed' ||
-      !normalize(item.command).includes(normalize(trustedToolPath))) continue;
+      !normalize(item.command).includes(normalize(toolCommand(workspace, mode)))) continue;
     for (const line of item.aggregated_output.split(/\r?\n/)) {
       try {
         const report = JSON.parse(line) as ToolReport;
@@ -56,7 +56,7 @@ export class AuthorSession {
     const artifactPath = mode === 'design' ? 'design.json' : 'case.json';
     const record: StageRecord = { stage, directory: relative(this.output, resolve(directory)), status: 'running' };
     this.state.stages.push(record); await this.save();
-    const prompt = `${instructions}\n\n你是持续工作的案件作者 Agent。工作目录只含本案内容。请在此目录创建或局部编辑 ${artifactPath}，不在最终回复中重复完整案件。不要修改可信工具、程序或归档记录，不委派，不访问其他案件。\n必须真实调用以下校验命令，检查失败时在本轮继续修复文件并重跑，直到通过或说明失败原因：\n${toolCommand(this.workspace, mode)}\n` +
+    const prompt = `${instructions}\n\n这是用户已批准、由应用自动编排的阶段，直接执行，不再向用户提问或等待方案批准。你是持续工作的案件作者 Agent。工作目录只含本案内容。请在此目录创建或局部编辑 ${artifactPath}，不在最终回复中重复完整案件。不要修改可信工具、程序或归档记录，不委派，不访问其他案件。\n必须原样真实调用以下校验命令，检查失败时在本轮继续修复文件并重跑，直到通过或说明失败原因：\n${toolCommand(this.workspace, mode)}\n` +
       (mode === 'case' ? `需要检查玩家呈现时可以运行：\n${toolCommand(this.workspace, 'replay')}\n` : '') +
       (mode === 'case' ? `若发现必须改变核心事实，先修订 design.json 并运行 ${toolCommand(this.workspace, 'design')}，返回 artifactPath=design.json、requestDesignRevision=true，应用会重新独立验收基石，不能继续绕过此验收。\n` : '') +
       '最终仅返回工作回执 JSON，artifactPath 为本轮文件名，summary 说明具体修改和检查结果；正常完成 requestDesignRevision=false。';

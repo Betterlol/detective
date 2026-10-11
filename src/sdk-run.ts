@@ -15,6 +15,7 @@ export interface AgentClient {
   resumeThread(id: string, options: ThreadOptions): AgentThread;
 }
 export type LoggedRun = { finalResponse: string; threadId: string; items: ThreadItem[]; usage: Usage | null };
+export class ModelCallError extends Error {}
 
 export function createCodexClient(): AgentClient {
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
@@ -38,7 +39,7 @@ export function createCodexClient(): AgentClient {
 export function agentOptions(config: ModelConfig, workingDirectory: string, author: boolean): ThreadOptions {
   return { model: config.model, workingDirectory: resolve(workingDirectory), skipGitRepoCheck: true,
     sandboxMode: author ? 'workspace-write' : 'read-only', approvalPolicy: 'never',
-    networkAccessEnabled: false, webSearchMode: 'disabled' };
+    networkAccessEnabled: false, webSearchMode: 'disabled', modelReasoningEffort: config.reasoningEffort ?? 'medium' };
 }
 
 export async function removeTempDirectory(dir: string, expectedParent: string, prefix: string) {
@@ -83,6 +84,6 @@ export async function runLoggedThread(thread: AgentThread, prompt: string, schem
   } catch (e) {
     if (finalResponse) await saveText(join(dir, 'raw.json'), finalResponse);
     await saveJson(join(dir, 'transport.json'), { exitCode: 1, elapsedMs: Date.now() - start, model: config.model, threadId, usage, error: String(e) });
-    throw e;
+    throw new ModelCallError(String(e));
   }
 }
